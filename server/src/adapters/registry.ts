@@ -100,6 +100,9 @@ import {
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
 import {
+  createServerAdapter as createOpenHandsServerAdapter,
+} from "@paperclipai/openhands-paperclip-adapter";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -836,6 +839,11 @@ const hermesLocalAdapter: ServerAdapterModule = {
   runtimeToolDelivery: "environment",
 };
 
+const openHandsLocalAdapter: ServerAdapterModule = {
+  ...createOpenHandsServerAdapter(),
+  runtimeToolDelivery: "environment",
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   runtimeToolDelivery: "invocation_context",
@@ -915,6 +923,7 @@ function registerBuiltInAdapters() {
     kimiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    openHandsLocalAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
