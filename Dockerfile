@@ -39,6 +39,7 @@ COPY packages/adapters/kimi-local/package.json packages/adapters/kimi-local/
 COPY packages/adapters/hermes/package.json packages/adapters/hermes/
 COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gateway/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
+COPY packages/adapters/openhands/package.json packages/adapters/openhands/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
@@ -175,15 +176,121 @@ ARG CLI_TOOLS_CACHE_EPOCH=""
 WORKDIR /app
 # Tool and OS layer BEFORE the app copy: it references nothing from /app, and
 # the app copy changes on every commit — ordered the other way around, this
-# (the single most expensive layer: four CLI toolchains + apt, per arch) can
-# never hit the layer cache and rebuilds on every build.
+# can never hit the layer cache and rebuilds on every build.
+#
+# The heavyweight third-party agent CLIs (claude-code, codex, opencode,
+# gemini-cli, kimi-code) are intentionally NOT installed here. They are large
+# (several GB of node bundles) and were the layers that failed to unpack on
+# disk-constrained hosts. This container runs the hermes and openhands
+# adapters only, which install their own toolchains in the agent-tools layer
+# below. The claude/codex/opencode/gemini/kimi adapters remain registered in
+# code, but invoking them requires those CLIs to be present — they simply
+# won't be available in this image. Add the npm install back if you need to
+# run one of those agent types in-container.
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
-  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @moonshot-ai/kimi-code@latest \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
+  && apt-get install -y --no-install-recommends openssh-client jq python3-pip \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+# Extra agent CLIs + self-signed CA for the local LiteLLM TLS proxy.
+# hermes-agent (the `hermes` CLI) and openhands are pip-installed so the
+# hermes_local adapter and OpenHands tooling are available in-container.
+# The CA cert is the self-signed cert of the LAN-only Caddy reverse proxy
+# that fronts the LiteLLM endpoint (see docker/ca/); bundling it into the
+# system trust store lets the Go-based harness binaries (opencode, etc.)
+# verify the proxy's HTTPS without disabling TLS.
+#
+# hermes-agent is installed as an editable install from a pinned commit, not
+# from PyPI: the PyPI release line stopped at 0.19.0 and requires-python
+# <3.14, so it cannot receive the tirith-scanner removal and newer fixes.
+# The pinned commit (HERMES_AGENT_SHA) is the one the host runs and has been
+# vetted as working. It contains the tirith-scanner removal (commit
+# 911da42e9e). Editable install (-e) is used because the upstream setup.py
+# blocks PEP 517 wheel builds by design.
+#
+# openhands is pinned to the exact version the running container shipped
+# (1.2.1) so rebuilds are reproducible.
+#
+# Python 3.14 is provisioned via uv (matching the host's Python version)
+# because several hermes dependencies (e.g. snowballstemmer) are gated to
+# python_version >= 3.14 in hermes's pyproject.toml. The system Python
+# (3.13 on Debian trixie) is too old for those gated deps, which causes
+# ModuleNotFoundError crashes at runtime. uv installs a self-contained
+# CPython 3.14 that the venv is built against.
+# The clone is a partial (blob:none) fetch plus an explicit
+# `fetch origin <sha>` of the pinned commit. A plain partial clone is flaky
+# here: its initial ref advertisement can omit the pinned SHA and make the
+# `cat-file -e` guard report it unreachable even though it is in origin.
+# Fetching the SHA explicitly always resolves it (GitHub enables uploadpack
+# allowReachableSHA1InWant for direct commit fetches), and the `cat-file -e`
+# guard below still fails the build if the commit is genuinely missing.
+# uv is invoked by absolute path (/usr/local/bin/uv). The uv installer
+# places the binary under $HOME/.local/bin, and in this stage HOME is
+# inherited from the base image (/root) — the runtime ENV that sets HOME to
+# /paperclip comes later. The binary is moved to /usr/local/bin so its
+# location is stable and independent of $HOME.
+#
+# UV_PYTHON_INSTALL_DIR=/opt/uv-python (an ENV, not a flag) relocates the
+# uv-managed CPython out of /root: uv's default python dir is
+# $HOME/.local/share/uv/python, but /root is mode 700, so the container's
+# runtime user (node) cannot traverse it — the venv's bin/python symlinks
+# into that dir and node gets "Permission denied" on every hermes/openhands
+# invocation. The venv symlinks into $UV_PYTHON_INSTALL_DIR, so it must be
+# an ENV visible to both `uv python install` and `uv venv`. /opt is
+# world-readable, so the symlinks resolve for node.
+#
+# A failed uv step also silently cascades into the git guard's "not
+# reachable" error (&&/|| grouping), masking the real failure, so the
+# guard message names that possibility.
+COPY docker/ca/litellm-proxy.crt /usr/local/share/ca-certificates/litellm-proxy.crt
+ARG HERMES_AGENT_SHA=e06df9c2eae6901f4c88f464e0ae6e753c0428b8
+ARG OPENHANDS_VERSION=1.2.1
+ARG UV_PYTHON_VERSION=3.14
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl git \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/install.sh | sh \
+  && mv /root/.local/bin/uv /usr/local/bin/uv \
+  && uv python install "${UV_PYTHON_VERSION}" \
+  && uv venv --python "${UV_PYTHON_VERSION}" --seed --clear /opt/agent-tools \
+  && /opt/agent-tools/bin/python --version \
+  && /opt/agent-tools/bin/pip install --no-cache-dir --upgrade pip \
+  && git clone --filter=blob:none --no-checkout \
+       https://github.com/NousResearch/hermes-agent.git /opt/hermes-src \
+  && git -C /opt/hermes-src fetch --filter=blob:none origin "${HERMES_AGENT_SHA}" \
+  && git -C /opt/hermes-src cat-file -e "${HERMES_AGENT_SHA}"^{commit} \
+       || { echo "ERROR: HERMES_AGENT_SHA ${HERMES_AGENT_SHA} not reachable in origin (git clone or explicit fetch failed)" >&2; exit 1; } \
+  && git -C /opt/hermes-src checkout --detach "${HERMES_AGENT_SHA}" \
+  && git -C /opt/hermes-src rev-parse HEAD | grep -qx "${HERMES_AGENT_SHA}" \
+       || { echo "ERROR: checkout did not land on ${HERMES_AGENT_SHA}" >&2; exit 1; } \
+  && /opt/agent-tools/bin/pip install --no-cache-dir -e /opt/hermes-src \
+       "openhands==${OPENHANDS_VERSION}" \
+  && rm -rf /opt/hermes-src/.git \
+  && ln -sf /opt/agent-tools/bin/hermes /usr/local/bin/hermes \
+  && ln -sf /opt/agent-tools/bin/openhands /usr/local/bin/openhands \
+  && update-ca-certificates \
+  && set -eux; \
+  # Guard: the venv python, the hermes entrypoint, and the openhands-sdk
+  # package must be usable by the container's runtime user (node, UID 1000),
+  # not just root. The venv's bin/python symlinks into
+  # $UV_PYTHON_INSTALL_DIR; if that dir ever lands behind a root-only path
+  # (e.g. the default $HOME/.local/share/uv/python under a 700 /root), node
+  # gets "Permission denied" at runtime. Run the real binaries as UID 1000 so
+  # a regression fails the build here, not on the first agent run.
+  #
+  # Note: the `openhands` CLI is an interactive prompt_toolkit TUI with no
+  # --version flag (see packages/adapters/openhands), so the openhands check
+  # is an openhands-sdk import probe (the headless path the adapter actually
+  # drives), not `openhands --version`.
+  chmod +rx /opt; \
+  su -s /bin/sh -c '/opt/agent-tools/bin/python -c "import sys;sys.exit(0)"' node; \
+  su -s /bin/sh -c 'hermes --version' node; \
+  su -s /bin/sh -c '/opt/agent-tools/bin/python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec(\"openhands.sdk\") else 1)"' node; \
+  set +x; \
+  exit 0
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

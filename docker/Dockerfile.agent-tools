@@ -1,0 +1,90 @@
+# Thin extension of the base paperclip-local image: adds the hermes + openhands
+# CLIs (in a venv) and the self-signed CA for the local LiteLLM TLS proxy.
+# Built FROM the previously-built paperclip-local (which already has the app,
+# rust runner, and the claude/codex/opencode CLIs) so we skip the expensive
+# rust/app layers and only add this one layer.
+FROM paperclip-local
+
+COPY docker/ca/litellm-proxy.crt /usr/local/share/ca-certificates/litellm-proxy.crt
+# hermes-agent is installed as an editable install from a pinned commit, not
+# from PyPI: the PyPI release line stopped at 0.19.0 and requires-python
+# <3.14, so it cannot receive the tirith-scanner removal and newer fixes.
+#
+# The pinned commit (HERMES_AGENT_SHA) is the one the host runs and has been
+# vetted as working. It contains the tirith-scanner removal (commit
+# 911da42e9e) and is the current origin/main tip, so the build clones main
+# at depth 1 and checks out the SHA. The SHA is recorded so the build is
+# reproducible; bump HERMES_AGENT_SHA to advance.
+#
+# Editable install (-e) is used because the upstream setup.py blocks
+# PEP 517 wheel builds by design (``bdist_wheel`` raises RuntimeError
+# unless HERMES_NIX_BUILD=1, a Nix-only workaround). Editable installs
+# never invoke bdist_wheel, so pip install -e <src> is the supported
+# path for non-PyPI installs.
+#
+# ruamel.yaml is installed explicitly because the pinned hermes source's
+# pyproject declares it as `ruamel.yaml==0.18.16; python_version >= '3.14'`,
+# but this venv is Python 3.13 — so the marker is false and `pip install -e`
+# skips it, leaving `hermes_yaml.py` (`from ruamel.yaml import YAML`) failing
+# at CLI startup with `ModuleNotFoundError: No module named 'ruamel'`. The
+# pinned source needs ruamel unconditionally at runtime regardless of the
+# marker, so pin it here. Bump this to match the pinned source's ruamel pin.
+#
+# openhands is pinned to the exact version the running container shipped
+# (1.2.1). An unpinned @latest in a rebuild can silently swap the harness
+# under the running instance; pin so rebuilds are reproducible and the
+# openhands setup is preserved across image updates.
+ARG HERMES_AGENT_SHA=e06df9c2eae6901f4c88f464e0ae6e753c0428b8
+ARG OPENHANDS_VERSION=1.2.1
+# Pin to match the pinned hermes source's ruamel requirement (see note above).
+ARG HERMES_RUAMEL_YAML_VERSION=0.18.16
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3-venv git \
+  && rm -rf /var/lib/apt/lists/* \
+  && python3 -m venv /opt/agent-tools \
+  && /opt/agent-tools/bin/pip install --no-cache-dir --upgrade pip \
+  && rm -rf /opt/hermes-src \
+  && git clone --filter=blob:none --no-checkout \
+       https://github.com/NousResearch/hermes-agent.git /opt/hermes-src \
+  && git -C /opt/hermes-src cat-file -e "${HERMES_AGENT_SHA}"^{commit} \
+       || { echo "ERROR: HERMES_AGENT_SHA ${HERMES_AGENT_SHA} not reachable in origin" >&2; exit 1; } \
+  && git -C /opt/hermes-src checkout --detach "${HERMES_AGENT_SHA}" \
+  && git -C /opt/hermes-src rev-parse HEAD | grep -qx "${HERMES_AGENT_SHA}" \
+       || { echo "ERROR: checkout did not land on ${HERMES_AGENT_SHA}" >&2; exit 1; } \
+  && /opt/agent-tools/bin/pip install --no-cache-dir -e /opt/hermes-src \
+       "openhands==${OPENHANDS_VERSION}" \
+       "ruamel.yaml==${HERMES_RUAMEL_YAML_VERSION}" \
+  && rm -rf /opt/hermes-src/.git \
+  && ln -sf /opt/agent-tools/bin/hermes /usr/local/bin/hermes \
+  && ln -sf /opt/agent-tools/bin/openhands /usr/local/bin/openhands \
+  && update-ca-certificates \
+  && hermes --version >/dev/null 2>&1 || true \
+  && openhands --version >/dev/null 2>&1 || true
+
+# The Python-based harness clients (hermes, openhands) use the requests/urllib3
+# stack, which honors SSL_CERT_FILE / REQUESTS_CA_BUNDLE. Point them at the
+# system bundle so the self-signed proxy cert is trusted by every
+# hermes/openhands child process (including the harness hello-probe), not just
+# by curl. Without this they reject the self-signed cert and the hello probe
+# fails with "Connection error".
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+# The OpenHands SDK (openhands-sdk) caches rendered Jinja prompts in
+# `<prompts-dir>/.jinja_cache` inside site-packages (prompt.py `_get_env` does
+# `os.makedirs(cache_folder, exist_ok=True)`). That dir is created by the
+# root-owned venv install, but the Paperclip agents run as `node` (uid 1000)
+# and need to write bytecode cache there. Without this the first OpenHands
+# turn fails with PermissionError on `.jinja_cache` (surfaced as a misleading
+# "system_prompt.j2 not found"). Pre-create the cache dirs owned by `node` so
+# the agent can write them.
+#
+# In openhands >= 1.2 the package layout moved to openhands/sdk/... and the
+# .jinja_cache dirs are created by the agent at runtime (first use), so this
+# fixup is a no-op for the current version. The [ -d ] && ... chain exits 1
+# when its last condition is false (no such dir), which would otherwise fail
+# the build; `|| true` makes the step fault-tolerant for either layout.
+RUN PKG_DIR=$(dirname $(/opt/agent-tools/bin/python3 -c 'import openhands.sdk,os;print(os.path.dirname(openhands.sdk.__file__))')) \
+  && for D in "$PKG_DIR/agent/prompts" "$PKG_DIR/context/prompts" "$PKG_DIR/context/condenser/prompts"; do \
+       [ -d "$D" ] && mkdir -p "$D/.jinja_cache" && chown 1000:1000 "$D/.jinja_cache" && chmod 755 "$D/.jinja_cache"; \
+     done || true
