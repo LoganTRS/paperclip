@@ -1,0 +1,40 @@
+# .github/workflows/paperclip-label-routing.yml
+#
+# GitHub-side half of the label → agent routing. On issue open / label add,
+# reads the issue's labels and, if a label is routed, creates the Paperclip
+# issue (idempotent) and assigns it to the mapped agent. Paperclip then
+# natively wakes the assigned agent via the `issue_assigned` wake reason.
+#
+# Requires (per-repo):
+#   - a `.paperclip-routing.json` at the repo root (label → Paperclip agent id)
+#   - the Paperclip URL as a repo variable: PAPERCLIP_URL
+#   - the Paperclip agent API key as a repo secret: PAPERCLIP_API_KEY
+name: paperclip-label-routing
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  issues: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Route label to Paperclip agent
+        env:
+          PAPERCLIP_URL: ${{ vars.PAPERCLIP_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_ROUTING_FILE: .paperclip-routing.json
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO: ${{ github.event.repository.name }}
+          GH_NUMBER: ${{ github.event.issue.number }}
+          GH_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: node ../scripts/paperclip-label-router.mjs
