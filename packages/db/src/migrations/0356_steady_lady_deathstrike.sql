@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "default_project_workspace_policy" jsonb;

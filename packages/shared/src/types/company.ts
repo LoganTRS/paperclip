@@ -26,6 +26,13 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
+  /**
+   * Company-level default execution-workspace policy. New projects created
+   * WITHOUT an explicit executionWorkspacePolicy inherit this (applied in
+   * server createProject; an explicit per-project policy always wins).
+   * Stored as raw JSONB and re-parsed at the project read boundary.
+   */
+  defaultProjectWorkspacePolicy: Record<string, unknown> | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;

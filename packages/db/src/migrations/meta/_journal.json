@@ -2479,6 +2479,13 @@
       "when": 1792188236099,
       "tag": "0355_agent_tool_definition_hooks",
       "breakpoints": true
+    },
+    {
+      "idx": 356,
+      "version": "7",
+      "when": 1792089002933,
+      "tag": "0356_steady_lady_deathstrike",
+      "breakpoints": true
     }
   ]
 }

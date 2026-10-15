@@ -2,6 +2,7 @@ import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-s
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  companies,
   projects,
   executionWorkspaces,
   projectAccessMembers,
@@ -661,6 +662,33 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       .from(projects)
       .where(eq(projects.companyId, companyId));
     projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+
+    // Company-level default execution-workspace policy. Applied ONLY when the
+    // caller did not supply an explicit policy (absent / null / empty object).
+    // An explicit per-project policy always wins. The read is a plain `db`
+    // read done outside the insert transaction (same pattern as the
+    // existingProjects read above) so the company row is never held open in
+    // the write tx. The value is normalized through the same parser used at
+    // the project read boundary (toProject) before it is persisted.
+    const explicitPolicyRaw = projectData.executionWorkspacePolicy;
+    const hasExplicitPolicy =
+      explicitPolicyRaw != null &&
+      (typeof explicitPolicyRaw !== "object" || Object.keys(explicitPolicyRaw).length > 0);
+    if (!hasExplicitPolicy) {
+      const companyDefaultRow = await db
+        .select({ defaultProjectWorkspacePolicy: companies.defaultProjectWorkspacePolicy })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const companyDefaultRaw = companyDefaultRow?.defaultProjectWorkspacePolicy ?? null;
+      if (companyDefaultRaw != null && typeof companyDefaultRaw === "object") {
+        const normalized = parseProjectExecutionWorkspacePolicy(companyDefaultRaw);
+        if (normalized) {
+          projectData.executionWorkspacePolicy = normalized as unknown as Record<string, unknown>;
+        }
+      }
+    }
 
     // Also write goalId to the legacy column (first goal or null)
     // The resolved set is canonical for persistence as well as validation:

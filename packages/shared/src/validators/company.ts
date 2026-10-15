@@ -4,6 +4,7 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
 } from "../constants.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { projectExecutionWorkspacePolicySchema } from "./project.js";
 
 const logoAssetIdSchema = z.string().guid().nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
@@ -38,6 +39,10 @@ export const updateCompanySchema = objectWithoutDefaults(
       spentMonthlyCents: z.number().int().nonnegative().optional(),
       requireBoardApprovalForNewAgents: z.boolean().optional(),
       interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
+      // Company-level default execution-workspace policy. Board governance
+      // field: it changes what NEW projects inherit. Nullable/optional so an
+      // explicit null clears the default (future projects then get no policy).
+      defaultProjectWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
       feedbackDataSharingEnabled: z.boolean().optional(),
       feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
       feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),

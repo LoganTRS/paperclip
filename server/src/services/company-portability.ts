@@ -3197,6 +3197,11 @@ function buildManifestFromPackageFiles(
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
           : readCompanyApprovalDefault(companyFrontmatter),
+      defaultProjectWorkspacePolicy: isPlainRecord(paperclipCompany.defaultProjectWorkspacePolicy)
+        ? paperclipCompany.defaultProjectWorkspacePolicy
+        : (isPlainRecord(companyFrontmatter.defaultProjectWorkspacePolicy)
+          ? companyFrontmatter.defaultProjectWorkspacePolicy
+          : null),
       feedbackDataSharingEnabled:
         typeof paperclipCompany.feedbackDataSharingEnabled === "boolean"
           ? paperclipCompany.feedbackDataSharingEnabled
@@ -4122,15 +4127,44 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     });
 
     const companyPath = "COMPANY.md";
+    const defaultProjectWorkspacePolicy = isPlainRecord(company.defaultProjectWorkspacePolicy)
+      ? company.defaultProjectWorkspacePolicy
+      : null;
     files[companyPath] = buildMarkdown(
       {
         name: company.name,
         description: company.description ?? null,
         schema: "agentcompanies/v1",
         slug: rootPath,
+        ...(defaultProjectWorkspacePolicy ? { defaultProjectWorkspacePolicy } : {}),
       },
       "",
     );
+
+    // The company-level default workspace policy is carried across so a
+    // rebuild inherits "what new projects inherit". It is kept even when its
+    // provision/seed commands reference instance-local paths (e.g. a seeder
+    // under /paperclip/...) because the restore kit is local to the operator;
+    // the warning makes the system-dependence explicit rather than silently
+    // dropping the default (unlike setupCommand, which is dropped).
+    if (defaultProjectWorkspacePolicy) {
+      const defaultWorkspaceStrategy = isPlainRecord(defaultProjectWorkspacePolicy.workspaceStrategy)
+        ? defaultProjectWorkspacePolicy.workspaceStrategy
+        : null;
+      const defaultPolicyCommands = [
+        asString(defaultProjectWorkspacePolicy.provisionCommand),
+        asString(defaultProjectWorkspacePolicy.runtimeProvisionCommand),
+        asString(defaultProjectWorkspacePolicy.teardownCommand),
+        asString(defaultWorkspaceStrategy?.provisionCommand),
+        asString(defaultWorkspaceStrategy?.runtimeProvisionCommand),
+        asString(defaultWorkspaceStrategy?.teardownCommand),
+      ].filter((command): command is string => Boolean(command));
+      if (defaultPolicyCommands.some((command) => containsAbsolutePathFragment(command))) {
+        warnings.push(
+          "Company default project workspace policy was exported with instance-specific provision/seed commands (absolute paths); verify they exist on the destination before import.",
+        );
+      }
+    }
 
     if (include.company && company.logoAssetId) {
       if (!storage) {
@@ -4743,6 +4777,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           logoPath: companyLogoPath,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
+          ...(defaultProjectWorkspacePolicy ? { defaultProjectWorkspacePolicy } : {}),
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
           feedbackDataSharingConsentByUserId: company.feedbackDataSharingConsentByUserId ?? null,
           feedbackDataSharingTermsVersion: company.feedbackDataSharingTermsVersion ?? null,
@@ -5367,6 +5402,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
           : false,
+        // Company-level default workspace policy: applied on a fresh company
+        // when the company payload is included (board_full). Null is a no-op
+        // (new companies default to no policy), so an old bundle without the
+        // field behaves identically to today.
+        defaultProjectWorkspacePolicy:
+          include.company && isPlainRecord(sourceManifest.company?.defaultProjectWorkspacePolicy)
+            ? sourceManifest.company.defaultProjectWorkspacePolicy
+            : null,
         feedbackDataSharingEnabled: include.company
           ? (sourceManifest.company?.feedbackDataSharingEnabled ?? false)
           : false,
@@ -5402,6 +5445,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
+          defaultProjectWorkspacePolicy: isPlainRecord(sourceManifest.company.defaultProjectWorkspacePolicy)
+            ? sourceManifest.company.defaultProjectWorkspacePolicy
+            : null,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
             ? new Date(sourceManifest.company.feedbackDataSharingConsentAt)

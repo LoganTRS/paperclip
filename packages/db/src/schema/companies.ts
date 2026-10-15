@@ -29,6 +29,14 @@ export const companies = pgTable(
     feedbackDataSharingConsentAt: timestamp("feedback_data_sharing_consent_at", { withTimezone: true }),
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
+    // Company-level default execution-workspace policy. New projects created
+    // WITHOUT an explicit executionWorkspacePolicy inherit this (deep-merged in
+    // server/src/services/projects.ts createProject). It is the editable "what
+    // do my new projects inherit" knob — workspace strategy type, default mode,
+    // and the provision/seed commands (e.g. the wayfinder tracker seeder).
+    // Stored as raw JSONB; parsed via parseProjectExecutionWorkspacePolicy at
+    // the read boundary, so an explicit per-project policy always wins.
+    defaultProjectWorkspacePolicy: jsonb("default_project_workspace_policy").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

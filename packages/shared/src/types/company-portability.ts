@@ -39,6 +39,13 @@ export interface CompanyPortabilityCompanyManifestEntry {
   logoPath: string | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
+  /**
+   * Company-level default execution-workspace policy, carried so a rebuild
+   * inherits "what new projects inherit". Instance-specific (may reference
+   * local provision/seed commands); the exporter keeps it but warns that it is
+   * system-dependent.
+   */
+  defaultProjectWorkspacePolicy: Record<string, unknown> | null;
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;

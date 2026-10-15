@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
+  type ProjectExecutionWorkspacePolicy,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -25,6 +26,7 @@ import {
 } from "../components/InteractionGovernancePanel";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
+  DraftInput,
   Field,
   ToggleField,
 } from "../components/agent-config-primitives";
@@ -54,6 +56,11 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+  // Company-level default execution-workspace policy (what NEW projects inherit
+  // when created without an explicit policy). Treated as absent when null so
+  // the "Enable" toggle has a stable initial state.
+  const [defaultWorkspacePolicy, setDefaultWorkspacePolicy] =
+    useState<ProjectExecutionWorkspacePolicy | null>(null);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -62,6 +69,9 @@ export function CompanySettings() {
     setDescription(selectedCompany.description ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
     setGovernance(selectedCompany.interactionResolverGovernance ?? {});
+    setDefaultWorkspacePolicy(
+      (selectedCompany.defaultProjectWorkspacePolicy ?? null) as ProjectExecutionWorkspacePolicy | null,
+    );
   }, [selectedCompany]);
 
   const generalDirty =
@@ -97,6 +107,24 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  // Persists the company-level default workspace policy. An explicit null
+  // clears the default (new projects then inherit no policy).
+  const defaultWorkspaceMutation = useMutation({
+    mutationFn: (policy: ProjectExecutionWorkspacePolicy | null) =>
+      companiesApi.update(selectedCompanyId!, { defaultProjectWorkspacePolicy: policy }),
+    onSuccess: (company) => {
+      setDefaultWorkspacePolicy(
+        (company.defaultProjectWorkspacePolicy ?? null) as ProjectExecutionWorkspacePolicy | null,
+      );
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  function updateDefaultWorkspacePolicy(next: ProjectExecutionWorkspacePolicy | null) {
+    setDefaultWorkspacePolicy(next);
+    defaultWorkspaceMutation.mutate(next);
+  }
 
   function handleGovernanceChange(
     kind: IssueThreadInteractionKind,
@@ -354,6 +382,121 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      {/* Default project workspace policy — what NEW projects inherit */}
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-workspace-policy-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          New project defaults
+        </div>
+        <div className="space-y-3">
+          <ToggleField
+            label="Default execution workspace policy"
+            hint="Applied to new projects created without an explicit workspace policy. A project that sets its own policy always overrides this."
+            checked={defaultWorkspacePolicy?.enabled === true}
+            onChange={(v) =>
+              updateDefaultWorkspacePolicy(
+                v
+                  ? {
+                      enabled: true,
+                      defaultMode: defaultWorkspacePolicy?.defaultMode ?? "isolated_workspace",
+                      workspaceStrategy: {
+                        type: "git_worktree",
+                        ...(defaultWorkspacePolicy?.workspaceStrategy
+                          ? {
+                              provisionCommand:
+                                defaultWorkspacePolicy.workspaceStrategy.provisionCommand ??
+                                defaultWorkspacePolicy.workspaceStrategy.runtimeProvisionCommand,
+                              runtimeProvisionCommand:
+                                defaultWorkspacePolicy.workspaceStrategy.runtimeProvisionCommand ??
+                                defaultWorkspacePolicy.workspaceStrategy.provisionCommand,
+                            }
+                          : {}),
+                      },
+                    }
+                  : null,
+              )
+            }
+            toggleTestId="company-settings-workspace-policy-toggle"
+          />
+          {defaultWorkspacePolicy?.enabled === true ? (
+            <div className="space-y-3">
+              <Field
+                label="Default mode"
+                hint="How tasks in new projects run by default."
+              >
+                <select
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                  aria-label="Default execution workspace mode"
+                  value={defaultWorkspacePolicy.defaultMode ?? "isolated_workspace"}
+                  onChange={(e) =>
+                    updateDefaultWorkspacePolicy({
+                      ...defaultWorkspacePolicy,
+                      defaultMode: e.target.value as "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_default",
+                    })
+                  }
+                >
+                  <option value="isolated_workspace">Isolated workspace (git worktree)</option>
+                  <option value="shared_workspace">Shared workspace</option>
+                  <option value="operator_branch">Operator branch</option>
+                  <option value="adapter_default">Adapter default</option>
+                </select>
+              </Field>
+              <Field
+                label="Provision command"
+                hint="One-time workspace seed run in the prepared worktree. Leave empty to keep default provisioning."
+              >
+                <DraftInput
+                  value={defaultWorkspacePolicy.workspaceStrategy?.provisionCommand ?? ""}
+                  onCommit={(value) =>
+                    updateDefaultWorkspacePolicy({
+                      ...defaultWorkspacePolicy,
+                      workspaceStrategy: {
+                        type: "git_worktree",
+                        ...(defaultWorkspacePolicy.workspaceStrategy ?? {}),
+                        provisionCommand: value || null,
+                      },
+                    })
+                  }
+                  immediate
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                  placeholder="bash ./scripts/provision-worktree.sh"
+                />
+              </Field>
+              <Field
+                label="Runtime provision command"
+                hint="Runs at runtime start in the worktree (use this for a one-shot seeder, e.g. the wayfinder tracker doc)."
+              >
+                <DraftInput
+                  value={defaultWorkspacePolicy.workspaceStrategy?.runtimeProvisionCommand ?? ""}
+                  onCommit={(value) =>
+                    updateDefaultWorkspacePolicy({
+                      ...defaultWorkspacePolicy,
+                      workspaceStrategy: {
+                        type: "git_worktree",
+                        ...(defaultWorkspacePolicy.workspaceStrategy ?? {}),
+                        runtimeProvisionCommand: value || null,
+                      },
+                    })
+                  }
+                  immediate
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                  placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                />
+              </Field>
+              {defaultWorkspaceMutation.isPending && (
+                <span className="text-xs text-muted-foreground">Saving...</span>
+              )}
+              {defaultWorkspaceMutation.isError && (
+                <span className="text-xs text-destructive">
+                  {defaultWorkspaceMutation.error instanceof Error
+                    ? defaultWorkspaceMutation.error.message
+                    : "Failed to save default workspace policy"}
+                </span>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
 

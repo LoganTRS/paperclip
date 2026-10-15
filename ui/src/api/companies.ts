@@ -7,6 +7,7 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  UpdateCompany,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
@@ -99,19 +100,7 @@ export const companiesApi = {
     api.post<Company>("/companies", data),
   update: (
     companyId: string,
-    data: Partial<
-      Pick<
-        Company,
-        | "name"
-        | "description"
-        | "status"
-        | "budgetMonthlyCents"
-        | "requireBoardApprovalForNewAgents"
-        | "interactionResolverGovernance"
-        | "feedbackDataSharingEnabled"
-        | "logoAssetId"
-      >
-    >,
+    data: UpdateCompany,
   ) => api.patch<Company>(`/companies/${companyId}`, data),
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
