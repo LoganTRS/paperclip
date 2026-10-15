@@ -39,6 +39,11 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      # Extra hostnames the instance accepts beyond the public URL host
+      # (LAN or Tailscale aliases), comma-separated; empty means none.
+      # Set in the environment or a .env file, e.g.
+      #   PAPERCLIP_ALLOWED_HOSTNAMES=10.0.1.50,myhost.tailnet.ts.net
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       # Independent secret for signed approval-gated tool actions.
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}"
