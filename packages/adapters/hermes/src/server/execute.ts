@@ -453,8 +453,11 @@ export async function execute(
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // Use -Q (quiet) to get clean output: just response + session_id line.
+  // Default to quiet (matches the config schema's declared default) so the
+  // Paperclip run transcript does not include the Hermes TUI banner or the
+  // full prompt echo. Set quiet: false in the agent config to opt out.
+  const useQuiet = cfgBoolean(config.quiet) !== false;
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
