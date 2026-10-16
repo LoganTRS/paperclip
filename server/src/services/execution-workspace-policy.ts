@@ -378,6 +378,37 @@ export function resolveExecutionWorkspaceMode(input: {
   legacyUseProjectWorkspace: boolean | null;
 }): ParsedExecutionWorkspaceMode {
   const issueMode = input.issueSettings?.mode;
+  // A mode-only pin (no workspaceStrategy of its own) is a derived default,
+  // never a deliberate operator choice — deliberate choices pin the strategy
+  // alongside the mode. When the project has an enabled default mode, such a
+  // pin that differs from it is re-derived from the live project policy (it
+  // may have been persisted at issue-create time against an older policy, or
+  // by default-issue-settings derivation before the project's policy was
+  // configured). A mode-only pin that already matches the project default is
+  // the policy itself, not a stale pin.
+  const issueHasStrategy = input.issueSettings?.workspaceStrategy != null;
+  const issueExplicitChoice =
+    issueMode != null &&
+    issueMode !== "inherit" &&
+    issueMode !== "reuse_existing" &&
+    issueHasStrategy;
+  const projectDefaultMode =
+    input.projectPolicy?.enabled && input.projectPolicy.defaultMode
+      ? resolveProjectDefaultExecutionWorkspaceMode(input.projectPolicy)
+      : null;
+  const staleModeOnlyPin =
+    projectDefaultMode != null &&
+    issueMode != null &&
+    issueMode !== "inherit" &&
+    issueMode !== "reuse_existing" &&
+    !issueExplicitChoice &&
+    issueMode !== projectDefaultMode;
+  if (issueExplicitChoice) {
+    return issueMode;
+  }
+  if (staleModeOnlyPin) {
+    return projectDefaultMode;
+  }
   if (issueMode && issueMode !== "inherit" && issueMode !== "reuse_existing") {
     return issueMode;
   }
@@ -390,6 +421,15 @@ export function resolveExecutionWorkspaceMode(input: {
   if (input.legacyUseProjectWorkspace === false) {
     return "agent_default";
   }
+  return "shared_workspace";
+}
+
+function resolveProjectDefaultExecutionWorkspaceMode(
+  projectPolicy: ProjectExecutionWorkspacePolicy,
+): ParsedExecutionWorkspaceMode {
+  if (projectPolicy.defaultMode === "isolated_workspace") return "isolated_workspace";
+  if (projectPolicy.defaultMode === "operator_branch") return "operator_branch";
+  if (projectPolicy.defaultMode === "adapter_default") return "agent_default";
   return "shared_workspace";
 }
 

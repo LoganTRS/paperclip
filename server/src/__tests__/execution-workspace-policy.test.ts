@@ -43,14 +43,36 @@ describe("execution workspace policy helpers", () => {
     expect(defaultIssueExecutionWorkspaceSettingsForProject(null)).toBeNull();
   });
 
-  it("prefers explicit issue mode over project policy and legacy overrides", () => {
+  it("prefers a mode-only issue pin only while the project policy is disabled", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: { enabled: false, defaultMode: "shared_workspace" },
+        issueSettings: { mode: "isolated_workspace" },
+        legacyUseProjectWorkspace: false,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("prefers an issue pin that carries its own strategy over the project policy", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+        issueSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "project_primary" } },
+        legacyUseProjectWorkspace: false,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("re-derives a conflicting mode-only issue pin from the enabled project policy", () => {
+    // A mode-only pin without its own strategy is a stale create-time default,
+    // not a deliberate operator choice; the enabled project policy wins.
     expect(
       resolveExecutionWorkspaceMode({
         projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
         issueSettings: { mode: "isolated_workspace" },
         legacyUseProjectWorkspace: false,
       }),
-    ).toBe("isolated_workspace");
+    ).toBe("shared_workspace");
   });
 
   it("resolves shared-workspace concurrency from issue override, project policy, then auto", () => {
@@ -704,11 +726,23 @@ describe("operator default isolated execution workspaces", () => {
     ).toBe("isolated_workspace");
   });
 
-  it("still lets an explicit issue setting win over the operator default", () => {
+  it("re-derives a conflicting mode-only issue setting from the enabled project default", () => {
+    // A mode-only pin (no workspaceStrategy of its own) is a stale create-time
+    // default; the enabled project default wins over it.
     expect(
       resolveExecutionWorkspaceMode({
         projectPolicy: withDefault(null),
         issueSettings: { mode: "shared_workspace" },
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("still lets an issue pin that carries its own strategy win over the operator default", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: withDefault(null),
+        issueSettings: { mode: "shared_workspace", workspaceStrategy: { type: "project_primary" } },
         legacyUseProjectWorkspace: null,
       }),
     ).toBe("shared_workspace");
