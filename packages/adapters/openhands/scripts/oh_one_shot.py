@@ -116,7 +116,39 @@ def main():
         if "/" not in model and not model.startswith(("openai", "openrouter", "anthropic")):
             model = f"openai/{model}"
         llm = LLM(model=model, api_key=api_key, base_url=base_url)
+
+        # Toolset.
+        #
+        # The SDK `Agent` has NO default tools (the `tools` field defaults to
+        # []), so a bare `Agent(llm=llm)` can only `think` and `finish` — it
+        # cannot run bash, edit files, or otherwise act on the environment. The
+        # earlier one-shot helper relied on that bare construction, which meant
+        # the agent could narrate "I will mark the issue done" but had no tool
+        # to actually do it.
+        #
+        # Use the SDK's canonical default preset (get_default_tools) rather than
+        # hand-rolling a list: it is the toolset OpenHands itself ships as the
+        # standard agent experience, and it stays correct as the SDK evolves.
+        #
+        # - enable_browser=False: this is a headless one-shot runner; the agent
+        #   should drive GitHub/repo work via `gh`/API (per the system-prompt
+        #   security policy) rather than a browser, and browser tools can hang
+        #   on air-gapped networks. The SDK's own CLI disables browser in
+        #   cli_mode for the same reason.
+        # - Override with OPENHANDS_TOOLS (comma-separated tool names, e.g.
+        #   "terminal,file_editor,task_tracker") when a run needs a narrower or
+        #   wider toolset. Empty/absent => the canonical default (terminal,
+        #   file_editor, task_tracker).
+        from openhands.sdk import Tool
+
+        tools_env = os.environ.get("OPENHANDS_TOOLS", "").strip()
+        if tools_env:
+            tool_specs = [Tool(name=n.strip()) for n in tools_env.split(",") if n.strip()]
+        else:
+            from openhands.tools.preset.default import get_default_tools
+            tool_specs = get_default_tools(enable_browser=False)
         agent_kwargs = {}
+        agent_kwargs["tools"] = tool_specs
         if args.system:
             # The SDK's `Agent` takes an AgentContext (object), not a raw string.
             # A custom --system prompt is injected as the system-message suffix.

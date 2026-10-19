@@ -3020,6 +3020,12 @@ function resolveWorkspaceProvisionCommand(
   strategy: Record<string, unknown>,
   repoRoot: string,
 ) {
+  // Policies store the host-side seeder under runtimeProvisionCommand
+  // (execution_workspace_policy.workspaceStrategy) while provisionCommand is
+  // the repo-managed hook; honor both so a stored seeder is never silently
+  // skipped during run prep.
+  const runtimeCommand = asString(strategy.runtimeProvisionCommand, "").trim();
+  if (runtimeCommand) return runtimeCommand;
   const configuredCommand = asString(strategy.provisionCommand, "").trim();
   if (configuredCommand) return configuredCommand;
 

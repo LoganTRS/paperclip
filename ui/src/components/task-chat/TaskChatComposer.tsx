@@ -24,6 +24,7 @@ import {
   type ComposerDraftSubmission,
 } from "@/lib/composer-draft";
 import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
+import { createUuid } from "@/lib/uuid";
 import {
   ArrowUp,
   Square,
@@ -682,7 +683,7 @@ export function TaskChatComposer({
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
-    const id = crypto.randomUUID();
+    const id = createUuid();
     setAttachments((prev) => [
       ...prev,
       {
@@ -1038,7 +1039,7 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (draftKey) {
         saveDraft(draftKey, submittedBody);
         saveDraftSubmission(draftKey, { attemptId, reviewed: false });
@@ -1107,6 +1108,18 @@ export function TaskChatComposer({
       }
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
+      // A plain (non-uncertain) failure used to restore the draft and stop
+      // here with no feedback, so the send button looked dead. Surface the
+      // reason so the user knows the message was not sent and can retry. The
+      // uncertain-submission path above already shows its own banner, so only
+      // report failures that have no other visible indication.
+      if (!(attemptId && error instanceof CommentSubmissionUnknownError)) {
+        setActionError(
+          error instanceof Error && error.message
+            ? `Message not sent: ${error.message}`
+            : "Message not sent. Try again.",
+        );
+      }
     } finally {
       if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);

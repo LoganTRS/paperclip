@@ -301,6 +301,36 @@ function renderComposer(props: ComponentProps<typeof TaskChatComposer>) {
 }
 
 describe("TaskChatComposer", () => {
+  it("submits a comment over a non-secure origin without crypto.randomUUID (HTTP LAN)", async () => {
+    // On a plain-HTTP LAN origin Chrome exposes no crypto.randomUUID (a
+    // Secure-Context API). Submission must still reach onAdd with a valid
+    // UUID attemptId via the getRandomValues fallback, and preserve the draft.
+    const key = "insecure-lan-send";
+    const originalRandomUUID = crypto.randomUUID;
+    // Simulate the insecure-origin browser: randomUUID is undefined,
+    // getRandomValues is still available (it is not a secure-context API).
+    delete (crypto as { randomUUID?: unknown }).randomUUID;
+    try {
+      expect(typeof crypto.getRandomValues).toBe("function");
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} />);
+      typeText("Please pick option B");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      // The comment must reach the submit callback (not silently no-op).
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      const attemptId = onAdd.mock.calls[0]?.[4] as string;
+      // The fallback produces a standards-compliant UUID v4 (version/variant nibbles set).
+      expect(attemptId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      // A clean successful send settles (clears) the retained submission and the
+      // draft, and empties the composer.
+      expect(loadDraftSubmission(key)).toBeNull();
+      expect(editable().textContent).toBe("");
+    } finally {
+      if (originalRandomUUID) crypto.randomUUID = originalRandomUUID;
+    }
+  });
+
   it("keeps creation images inline and prevents submission during their upload", async () => {
     let resolveUpload!: (url: string) => void;
     const onImageUpload = vi.fn().mockReturnValue(new Promise<string>((resolve) => { resolveUpload = resolve; }));

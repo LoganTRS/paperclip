@@ -93,3 +93,7 @@ test-results/
 
 # Opt-in CI timing artifacts
 .ci-profile/
+
+# Python bytecode (seeder scripts under packages/adapters/openhands/scripts)
+__pycache__/
+*.pyc

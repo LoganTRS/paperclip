@@ -1856,6 +1856,78 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
   });
 
+  it("runs the seeder stored only under runtimeProvisionCommand during run prep", async () => {
+    const repoRoot = await createTempRepo();
+    // A host-side seed command (the wayfinder tracker seeder pattern): it is
+    // stored on the execution workspace policy under
+    // workspaceStrategy.runtimeProvisionCommand, not provisionCommand, and the
+    // repo has no scripts/provision-worktree.sh builtin fallback.
+    const scriptDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-seed-"));
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(scriptDir, "seed.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'mkdir -p "$PAPERCLIP_WORKSPACE_CWD/docs/agents"',
+        'printf "tracker\\n" > "$PAPERCLIP_WORKSPACE_CWD/docs/agents/issue-tracker.md"',
+        "printf '%s\\n' \"$PAPERCLIP_WORKSPACE_CREATED\" > .paperclip-seed-created",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const realize = () =>
+      realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            runtimeProvisionCommand: `bash ${path.join(scriptDir, "seed.sh")}`,
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-449",
+          title: "Run runtime provision command",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Wayfinder",
+          companyId: "company-1",
+        },
+      });
+
+    try {
+      const workspace = await realize();
+      expect(workspace.created).toBe(true);
+      await expect(
+        fs.readFile(path.join(workspace.cwd, "docs", "agents", "issue-tracker.md"), "utf8"),
+      ).resolves.toBe("tracker\n");
+      await expect(fs.readFile(path.join(workspace.cwd, ".paperclip-seed-created"), "utf8")).resolves.toBe(
+        "true\n",
+      );
+
+      const reused = await realize();
+      expect(reused.created).toBe(false);
+      await expect(
+        fs.readFile(path.join(reused.cwd, "docs", "agents", "issue-tracker.md"), "utf8"),
+      ).resolves.toBe("tracker\n");
+      await expect(fs.readFile(path.join(reused.cwd, ".paperclip-seed-created"), "utf8")).resolves.toBe(
+        "false\n",
+      );
+    } finally {
+      await fs.rm(scriptDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses the latest repo-managed provision script when reusing an existing worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
