@@ -2904,17 +2904,46 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 }
 
 /** A workspace can contain several tasks. Reading files/operations requires
- * access to every task bound to it, not just the task that originally made it. */
+ * access to every task bound to it, not just the task that originally made it.
+ *
+ * A retained privacy source whose issue row no longer exists (the issue was
+ * deleted, but the retention trigger kept its id in `_issuePrivacySources`)
+ * would otherwise reject every actor forever — "no one can read a deleted issue,"
+ * so the `not exists(...readable)` clause is permanently unsatisfiable and the
+ * workspace becomes unreadable to everyone. For `git_worktree` workspaces this
+ * is safe to ignore: the files of a deleted ticket are not segregated to that
+ * ticket (a worktree is one shared checkout of a branch that every live ticket
+ * on the branch already reads), so a dead source adds no privacy boundary — only
+ * an impossible-to-pass check. A source that resolves to a LIVE issue the actor
+ * cannot read is always denied, for every strategy. Directory-based strategies
+ * (where a ticket's files can be a genuinely separate on-disk directory that
+ * outlives its row) keep the fail-closed behavior. */
 export async function executionWorkspaceReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   const issueCondition = await issueReadSqlCondition(db, actor);
   const projectCondition = await projectReadSqlCondition(db, actor);
+  // A privacy source is disallowed when it is a live issue the actor cannot read,
+  // OR it is a stale source on a non-git_worktree workspace (fail-closed). A stale
+  // source on a git_worktree workspace is a no-op (the deleted ticket's files are
+  // not separable from the shared branch checkout that live sources already gate).
+  // NOTE: the subquery that embeds `issueCondition` must reference the `issues`
+  // table UNALIASED — issueCondition references `issues.id`/`issues.company_id`
+  // from the enclosing FROM scope, so aliasing it (e.g. `issues live`) breaks the
+  // resolution of those columns. The source id is matched canonically via
+  // canonicalExecutionUuid (upstream's UUID-normalizing match) so a source key is
+  // only compared against a live issue's id when it is a well-formed UUID.
+  const sourceDisallowed = sql<boolean>`(
+    exists (select 1 from ${issues} where ${issues.id} = ${canonicalExecutionUuid(sql`source.id`)}
+      and ${issues.companyId} = ${executionWorkspaces.companyId} and not ${issueCondition})
+    or (not exists (select 1 from ${issues} where ${issues.id} = ${canonicalExecutionUuid(sql`source.id`)}
+      and ${issues.companyId} = ${executionWorkspaces.companyId})
+      and ${executionWorkspaces.strategyType} <> 'git_worktree')
+  )`;
   return sql<boolean>`(
     (${executionWorkspaces.projectId} is null or exists (
       select 1 from ${projects} where ${projects.id} = ${executionWorkspaces.projectId}
         and ${projects.companyId} = ${executionWorkspaces.companyId} and ${projectCondition}))
     and not exists (select 1 from jsonb_object_keys(coalesce(${executionWorkspaces.metadata}->'_issuePrivacySources', '{}'::jsonb)) source(id)
-      where not exists (select 1 from ${issues} where ${issues.id} = ${canonicalExecutionUuid(sql`source.id`)}
-        and ${issues.companyId} = ${executionWorkspaces.companyId} and ${issueCondition}))
+      where ${sourceDisallowed})
     and not exists (select 1 from ${issues}
       where ${issues.companyId} = ${executionWorkspaces.companyId}
         and (${issues.executionWorkspaceId} = ${executionWorkspaces.id} or ${issues.id} = ${executionWorkspaces.sourceIssueId})

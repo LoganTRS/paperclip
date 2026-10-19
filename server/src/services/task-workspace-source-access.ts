@@ -51,7 +51,17 @@ export async function assertTaskWorkspaceAccess(
       ? inArray(sql`${issues.id}`, retainedIssueIds.map(id => canonicalExecutionUuid(sql`${id}::text`))) : undefined),
   )));
   const sourceIds = new Set(sources.map(source => source.id));
-  if (retainedIssueIds.some(id => !sourceIds.has(id))) throw forbidden("Task workspace source is no longer accessible");
+  // A retained id with no live issue row is a stale source (the issue was deleted
+  // but the retention trigger kept its id in `_issuePrivacySources`). For
+  // git_worktree workspaces the deleted ticket's files are not separable from the
+  // shared branch checkout that the live sources already gate, so a stale source is
+  // a no-op and must not brick admission. Directory-based strategies keep the
+  // fail-closed behavior (a stale source there can be a genuine separate directory).
+  // A LIVE source the actor cannot read is still denied by the loop below for every
+  // strategy.
+  if (workspace.strategyType !== "git_worktree" && retainedIssueIds.some(id => !sourceIds.has(id))) {
+    throw forbidden("Task workspace source is no longer accessible");
+  }
   const access = accessService(db as Db);
   if (sources.length === 0 && !workspace.projectId) {
     const decision = await measureRunPhase("workspace.access.authorization", () => access.decide({ actor, action: "company_scope:read", resource: { type: "company", companyId } }));

@@ -57,6 +57,84 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(overview.items).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceId: f.workspaceId, projectId: null })]));
   });
 
+  async function gitWorktreeWorkspaceFixture() {
+    const companyId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Worktree files", issuePrefix: `W${companyId.slice(0, 6)}` });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Write a report" });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId: null, sourceIssueId: issueId,
+      mode: "isolated_workspace", strategyType: "git_worktree", name: "Worktree files", cwd: `/tmp/worktree-${issueId}` });
+    return { companyId, issueId, workspaceId, actor: { type: "board" as const, source: "local_implicit" as const, isInstanceAdmin: true } };
+  }
+  async function directoryWorkspaceFixture() {
+    const companyId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Directory files", issuePrefix: `D${companyId.slice(0, 6)}` });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Write a report" });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId: null, sourceIssueId: issueId,
+      mode: "shared_workspace", strategyType: "task_directory", name: "Directory files", cwd: `/tmp/dir-${issueId}` });
+    return { companyId, issueId, workspaceId, actor: { type: "board" as const, source: "local_implicit" as const, isInstanceAdmin: true } };
+  }
+
+  it("keeps a git_worktree workspace readable after a retained source is deleted", async () => {
+    const f = await gitWorktreeWorkspaceFixture(), service = executionWorkspaceService(db);
+    // A second ticket bound into the same worktree becomes a retained privacy
+    // source. Delete it: the retention trigger keeps its id in
+    // `_issuePrivacySources`, but for a git_worktree that dead id must be a no-op
+    // (the deleted ticket's files are not separable from the shared branch
+    // checkout the live sources already gate), so admission stays open.
+    const [secondary] = await db.insert(issues).values({ companyId: f.companyId, title: "Secondary task" }).returning();
+    await service.bindTaskWorkspace(f.companyId, secondary.id, f.workspaceId);
+    const [withSource] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(withSource.metadata?._issuePrivacySources).toMatchObject({ [secondary.id]: true });
+    expect(await canActorReadExecutionWorkspace(db, f.actor, f.workspaceId)).toBe(true);
+
+    await db.delete(issues).where(eq(issues.id, secondary.id));
+    // The orphan id survives in metadata (the trigger only adds, never prunes)...
+    const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(after.metadata?._issuePrivacySources).toMatchObject({ [secondary.id]: true });
+    // ...yet the workspace must remain readable (both the SQL read-admission and
+    // the JS assertTaskWorkspaceAccess treat the dead source as a no-op).
+    expect(await canActorReadExecutionWorkspace(db, f.actor, f.workspaceId)).toBe(true);
+    await expect(assertTaskWorkspaceAccess(db, f.actor, f.companyId, f.workspaceId)).resolves.toBeUndefined();
+  });
+
+  it("still denies a git_worktree workspace for a LIVE source the actor cannot read", async () => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    try {
+      const f = await gitWorktreeWorkspaceFixture();
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Organization" }).returning();
+      const [reader] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated reader", adapterType: "process" }).returning();
+      // A private, live source that only its responsible user can read.
+      const writer = await issueService(db).create(f.companyId, {
+        title: "Private writer", projectId: project.id, visibility: "private", responsibleUserId: "private-owner",
+        workspaceSelectionActor: f.actor, workspaceSelection: { kind: "existing" as const, workspaceId: f.workspaceId },
+      });
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(workspace.metadata?._issuePrivacySources).toMatchObject({ [writer.id]: true });
+      // The source is LIVE (not deleted) but unreadable to `reader` -> fail-closed,
+      // even on git_worktree. A dead source being tolerated must not weaken this.
+      expect(await canActorReadExecutionWorkspace(db, { type: "agent", agentId: reader.id, companyId: f.companyId }, f.workspaceId)).toBe(false);
+      await expect(assertTaskWorkspaceAccess(db, { type: "agent", agentId: reader.id, companyId: f.companyId }, f.companyId, f.workspaceId))
+        .rejects.toThrow(/Task workspace (source is no longer accessible|access is no longer available)/);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("keeps fail-closed for a directory workspace after a retained source is deleted", async () => {
+    const f = await directoryWorkspaceFixture(), service = executionWorkspaceService(db);
+    const [secondary] = await db.insert(issues).values({ companyId: f.companyId, title: "Secondary task" }).returning();
+    await service.bindTaskWorkspace(f.companyId, secondary.id, f.workspaceId);
+    const [withSource] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(withSource.metadata?._issuePrivacySources).toMatchObject({ [secondary.id]: true });
+    expect(await canActorReadExecutionWorkspace(db, f.actor, f.workspaceId)).toBe(true);
+
+    await db.delete(issues).where(eq(issues.id, secondary.id));
+    // Directory strategies keep the conservative behavior: a retained source whose
+    // issue row is gone can be a genuine separate directory, so admission fails
+    // closed (the workspace is unreadable rather than silently opened up).
+    expect(await canActorReadExecutionWorkspace(db, f.actor, f.workspaceId)).toBe(false);
+    await expect(assertTaskWorkspaceAccess(db, f.actor, f.companyId, f.workspaceId))
+      .rejects.toThrow(/Task workspace (source is no longer accessible|access is no longer available)/);
+  });
+
   it.each(["replace", "clear"] as const)("retains unbound task privacy and old root ownership when an update %ss its source", async action => {
     const f = await fixture(), service = executionWorkspaceService(db);
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-update-provenance-"));
