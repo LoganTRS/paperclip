@@ -3777,20 +3777,51 @@ export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<PaperclipSkillEntry[]> {
-  const root = await resolvePaperclipSkillsDir(moduleDir, additionalCandidates);
-  if (!root) return [];
+  const candidates = [
+    ...PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES.map((relativePath) =>
+      path.resolve(moduleDir, relativePath),
+    ),
+    ...additionalCandidates.map((candidate) => path.resolve(candidate)),
+  ];
+  const seenRoots = new Set<string>();
+  const seenSkills = new Set<string>();
+  const merged: PaperclipSkillEntry[] = [];
 
-  try {
-    const entries = await fs.readdir(root, { withFileTypes: true });
-    const dirs = entries.filter((entry) => entry.isDirectory());
-    return dirs.map((entry) => ({
-      key: `paperclipai/paperclip/${entry.name}`,
-      runtimeName: entry.name,
-      source: path.join(root, entry.name),
-    }));
-  } catch {
-    return [];
+  // Merge every existing skills root rather than stopping at the first one.
+  // A sparse shadow dir (e.g. an adapter-internal `skills/` added later) must
+  // not hide the canonical repo-root skills dir: "first existing dir wins"
+  // silently flipped the canonical root when such a dir appeared, breaking
+  // reconcile for skills that only live in the other root. Merging keeps every
+  // skill discoverable from the root that actually contains it. First
+  // candidate's copy wins on a name conflict (the candidates are ordered by
+  // proximity to the adapter, so the closest root is authoritative).
+  for (const root of candidates) {
+    if (seenRoots.has(root)) continue;
+    seenRoots.add(root);
+    const isDirectory = await fs
+      .stat(root)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+    if (!isDirectory) continue;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (seenSkills.has(entry.name)) continue;
+      seenSkills.add(entry.name);
+      merged.push({
+        key: `paperclipai/paperclip/${entry.name}`,
+        runtimeName: entry.name,
+        source: path.join(root, entry.name),
+      });
+    }
   }
+
+  return merged;
 }
 
 export async function readInstalledSkillTargets(

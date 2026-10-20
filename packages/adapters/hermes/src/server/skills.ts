@@ -239,6 +239,18 @@ export async function reconcileHermesPaperclipSkills(
       ? path.resolve(path.dirname(target), linkedSource)
       : null;
     if (resolvedSource !== path.resolve(entry.source)) {
+      // The target exists but points somewhere other than this entry's source.
+      // If it is a symlink we manage (the normal reconcile-managed case), a
+      // layout change (e.g. the canonical skills root moved) can leave it stale;
+      // re-point it rather than aborting the whole run. A real directory at the
+      // target is a genuine "occupied by another installation" conflict and
+      // still throws — we never clobber a non-symlink the user owns.
+      const targetStat = await fs.lstat(target).catch(() => null);
+      if (targetStat?.isSymbolicLink()) {
+        await fs.unlink(target).catch(() => {});
+        await fs.symlink(entry.source, target);
+        continue;
+      }
       throw new Error(
         `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
       );
