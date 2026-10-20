@@ -136,6 +136,14 @@ RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -ty
 ARG PAPERCLIP_BUILD_COMMIT=""
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+# Build the adapter packages (and the shared adapter-utils they depend on) so
+# their dist/ is compiled fresh from the current source, not carried in stale
+# from the host working tree. The server imports adapters from their dist/, and
+# the Docker build context's COPY . . would otherwise ship whatever dist/ the
+# host had last built — a source change that skips this step ships stale code.
+# Order matters: adapter-utils first (its dependents compile against it).
+RUN pnpm --filter @paperclipai/adapter-utils build \
+  && pnpm --filter "@paperclipai/adapter-*" --filter @paperclipai/hermes-paperclip-adapter --filter @paperclipai/openhands-paperclip-adapter build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
