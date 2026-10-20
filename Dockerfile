@@ -289,6 +289,17 @@ RUN apt-get update \
   su -s /bin/sh -c '/opt/agent-tools/bin/python -c "import sys;sys.exit(0)"' node; \
   su -s /bin/sh -c 'hermes --version' node; \
   su -s /bin/sh -c '/opt/agent-tools/bin/python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec(\"openhands.sdk\") else 1)"' node; \
+  # The openhands SDK writes a Jinja2 bytecode cache (.jinja_cache) into its
+  # own prompts/ dir at runtime (sdk/context/prompts/prompt.py: os.makedirs
+  # then FileSystemBytecodeCache). That dir is root-owned after `uv venv`
+  # (built as root), so the runtime user (node, UID 1000) gets
+  # "PermissionError: [Errno 13] Permission denied .../openhands/sdk/.../
+  # prompts/.jinja_cache" and the adapter dies on the first prompt render —
+  # before the agent does any work. chown the openhands package tree to node
+  # so the cache write succeeds, and PROBE it as node (not just an import) so
+  # a future regression fails the build here, not on the first agent run.
+  chown -R node:node /opt/agent-tools/lib/python3.14/site-packages/openhands; \
+  su -s /bin/sh -c '/opt/agent-tools/bin/python -c "import os,openhands.sdk; d=os.path.join(os.path.dirname(openhands.sdk.__file__), chr(99)+chr(111)+chr(110)+chr(116)+chr(101)+chr(120)+chr(116), chr(112)+chr(114)+chr(111)+chr(109)+chr(112)+chr(116)+chr(115)); c=os.path.join(d, chr(46)+chr(106)+chr(105)+chr(110)+chr(106)+chr(105)+chr(95)+chr(99)+chr(97)+chr(99)+chr(104)+chr(101)); os.makedirs(c, exist_ok=True); f=os.path.join(c, chr(46)+chr(119)+chr(116)+chr(101)+chr(115)+chr(116)); open(f, chr(119)).close(); os.remove(f); print(openhands.sdk.__file__ + chr(58) + chr(32) + chr(119)+chr(114)+chr(105)+chr(116)+chr(97)+chr(98)+chr(108)+chr(101))"' node; \
   set +x; \
   exit 0
 
