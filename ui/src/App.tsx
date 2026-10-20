@@ -110,6 +110,7 @@ const AppNotConnected = lazy(() => import("./pages/apps/AppNotConnected").then((
 const GatewaysList = lazy(() => import("./pages/apps/gateways/GatewaysList").then((module) => ({ default: module.GatewaysList })));
 const GatewayDetail = lazy(() => import("./pages/apps/gateways/GatewayDetail").then((module) => ({ default: module.GatewayDetail })));
 const CompanySkills = lazy(() => import("./pages/CompanySkills").then((module) => ({ default: module.CompanySkills })));
+const Wayfinder = lazy(() => import("./pages/Wayfinder").then((module) => ({ default: module.Wayfinder })));
 const SkillSources = lazy(() => import("./pages/SkillSources").then((module) => ({ default: module.SkillSources })));
 const SkillStudio = lazy(() => import("./pages/SkillStudio").then((module) => ({ default: module.SkillStudio })));
 const Secrets = lazy(() => import("./pages/Secrets").then((module) => ({ default: module.Secrets })));
@@ -303,6 +304,14 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       </Route>
       <Route path="issues" element={<Issues />} />
       <Route path="tasks" element={<Navigate to="/issues" replace />} />
+      <Route
+        path="wayfinder"
+        element={
+          <Suspense fallback={<PaperclipLoading />}>
+            <Wayfinder />
+          </Suspense>
+        }
+      />
       <Route path="search" element={<Search />} />
       {mergedTasks ? (
         <>
