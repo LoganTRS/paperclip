@@ -38,6 +38,7 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { useMobileNavVisibility } from "../hooks/useMobileNavVisibility";
+import { isEmbeddedMode } from "../lib/embedded-mode";
 import { healthApi } from "../api/health";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { useOptionalToastActions } from "../context/ToastContext";
@@ -89,6 +90,9 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     isMobile,
     setForceCollapsed,
   } = useSidebar();
+  // Embedded mode (iframe side pane): hide the global nav sidebar so the
+  // embedded issue page doesn't duplicate the host app's chrome.
+  const embedded = isEmbeddedMode();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
@@ -592,7 +596,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
-        {isMobile && sidebarOpen && (
+        {!embedded && isMobile && sidebarOpen && (
           <button
             type="button"
             className="fixed inset-0 z-40 bg-black/50"
@@ -601,7 +605,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           />
         )}
 
-        {isMobile ? (
+        {embedded ? null : isMobile ? (
           <div
             className={cn(
               "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
@@ -660,7 +664,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
             )}
           >
-            <StandaloneBrowserControls mobile={isMobile} />
+            {!embedded && <StandaloneBrowserControls mobile={isMobile} />}
             <BreadcrumbBar />
             {isMobile && isCompanySettingsRoute ? (
               <div className="border-b border-border px-4 pb-3">

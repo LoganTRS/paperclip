@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildMapGraph, isWayfindingMap } from "./Wayfinder";
+import { buildMapGraph, isWayfindingMap, issuePaneSrc } from "./Wayfinder";
+import { isEmbeddedMode } from "../lib/embedded-mode";
 
 function issue(partial: Partial<Issue> & { id: string; title: string }): Issue {
   return {
@@ -181,5 +182,35 @@ describe("buildMapGraph", () => {
     );
     const graph = buildMapGraph(map, [map, d, a]);
     expect(graph.frontier.map((t) => t.id)).toEqual(["a"]);
+  });
+});
+
+describe("issuePaneSrc (same-screen ticket pane)", () => {
+  it("builds a same-origin iframe src with the company prefix and embedded flag", () => {
+    expect(issuePaneSrc("TEC", "issue-123")).toBe("/TEC/issues/issue-123?embedded=1");
+  });
+
+  it("keeps the embedded flag so the embedded instance uses memory history + compact chrome", () => {
+    const src = issuePaneSrc("techrockstars", "abc");
+    expect(src.endsWith("?embedded=1")).toBe(true);
+    // Same origin: no scheme/host — relative to the current app.
+    expect(src.startsWith("//")).toBe(false);
+    expect(src.startsWith("/techrockstars/issues/")).toBe(true);
+  });
+
+  it("handles a prefix with mixed case/digits", () => {
+    expect(issuePaneSrc("TechRockStars", "xyz")).toBe("/TechRockStars/issues/xyz?embedded=1");
+  });
+});
+
+describe("isEmbeddedMode (embedded shell signal)", () => {
+  it("is true when the embedded query param is present", () => {
+    expect(isEmbeddedMode("?embedded=1")).toBe(true);
+    expect(isEmbeddedMode("?embedded=1&other=x")).toBe(true);
+  });
+
+  it("is false when the embedded param is absent", () => {
+    expect(isEmbeddedMode("")).toBe(false);
+    expect(isEmbeddedMode("?other=x")).toBe(false);
   });
 });

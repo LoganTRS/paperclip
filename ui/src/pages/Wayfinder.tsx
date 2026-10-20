@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Map as MapIcon, Compass } from "lucide-react";
+import { Map as MapIcon, Compass, X, ExternalLink } from "lucide-react";
 import { Link } from "@/lib/router";
 import { issuesApi, type IssueListFilters } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
@@ -18,9 +18,12 @@ import { cn } from "../lib/utils";
  * tickets whose blockers are all done — is highlighted on top so an operator
  * sees what is attackable first.
  *
- * Read-only: every node links to its task detail page. No backend, schema, or
- * migration changes are needed — issues.parent_id gives the map→ticket tree,
- * and the issue list already returns blockedBy / blocks per issue.
+ * Clicking a ticket (or the map) opens the FULL issue detail page in a
+ * same-screen side pane (an iframe on the same origin) so you can read AND
+ * answer the ticket — comments, status changes, HITL question cards — without
+ * leaving the map or losing your place. No backend, schema, or migration
+ * changes: issues.parent_id gives the map→ticket tree, and the issue list
+ * already returns blockedBy / blocks per issue.
  */
 
 /**
@@ -110,6 +113,15 @@ function issueHref(id: string): string {
   return `/issues/${id}`;
 }
 
+/**
+ * The iframe src for the same-screen ticket pane. Always same-origin (the app's
+ * own `/{prefix}/issues/{id}` route) with the `embedded=1` flag so the embedded
+ * instance runs on in-memory history + compact chrome (see lib/embedded-mode).
+ */
+export function issuePaneSrc(prefix: string, issueId: string): string {
+  return `/${prefix}/issues/${issueId}?embedded=1`;
+}
+
 function EdgeLegend() {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-(length:--text-nano) text-muted-foreground">
@@ -126,7 +138,13 @@ function EdgeLegend() {
   );
 }
 
-function MapDag({ graph }: { graph: MapGraph }) {
+function MapDag({
+  graph,
+  onOpenIssue,
+}: {
+  graph: MapGraph;
+  onOpenIssue: (id: string) => void;
+}) {
   const { map, tickets, frontier } = graph;
   const ticketList = [...tickets.values()].filter((ticket) => ticket.id !== map.id);
 
@@ -134,13 +152,15 @@ function MapDag({ graph }: { graph: MapGraph }) {
     <div className="rounded-lg border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
-          <Link
-            to={issueHref(map.id)}
-            className="truncate text-(length:--text-compact) font-semibold hover:underline"
+          <button
+            type="button"
+            onClick={() => onOpenIssue(map.id)}
+            className="max-w-full truncate text-left text-(length:--text-compact) font-semibold hover:underline"
+            title="Open the map in the side pane"
           >
             {map.identifier ? `${map.identifier} · ` : ""}
             {map.title}
-          </Link>
+          </button>
           <div className="mt-1 flex items-center gap-2">
             <IssueStatusBadge status={map.status} />
             <span className="text-(length:--text-nano) text-muted-foreground">
@@ -165,7 +185,7 @@ function MapDag({ graph }: { graph: MapGraph }) {
           <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {frontier.map((ticket) => (
               <li key={ticket.id}>
-                <FrontierCard ticket={ticket} />
+                <FrontierCard ticket={ticket} onOpenIssue={onOpenIssue} />
               </li>
             ))}
           </ul>
@@ -176,29 +196,51 @@ function MapDag({ graph }: { graph: MapGraph }) {
         <h3 className="mb-2 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
           Dependency graph
         </h3>
-        <DependencyGraph mapId={map.id} tickets={tickets} edges={graph.edges} />
+        <DependencyGraph
+          mapId={map.id}
+          tickets={tickets}
+          edges={graph.edges}
+          onOpenIssue={onOpenIssue}
+        />
       </div>
     </div>
   );
 }
 
-function FrontierCard({ ticket }: { ticket: Issue }) {
+function FrontierCard({
+  ticket,
+  onOpenIssue,
+}: {
+  ticket: Issue;
+  onOpenIssue: (id: string) => void;
+}) {
   return (
-    <Link
-      to={issueHref(ticket.id)}
-      className="flex items-start gap-2 rounded-md border border-(--status-task-done)/40 bg-(--status-task-done)/10 px-3 py-2 transition-colors hover:bg-(--status-task-done)/20"
-    >
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-(length:--text-compact) font-medium">
-          {ticket.identifier ? `${ticket.identifier} · ` : ""}
-          {ticket.title}
+    <div className="flex items-start gap-2">
+      <button
+        type="button"
+        onClick={() => onOpenIssue(ticket.id)}
+        className="flex min-w-0 flex-1 items-start gap-2 rounded-md border border-(--status-task-done)/40 bg-(--status-task-done)/10 px-3 py-2 text-left transition-colors hover:bg-(--status-task-done)/20"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-(length:--text-compact) font-medium">
+            {ticket.identifier ? `${ticket.identifier} · ` : ""}
+            {ticket.title}
+          </div>
+          <div className="mt-1.5">
+            <IssueStatusBadge status={ticket.status} />
+          </div>
         </div>
-        <div className="mt-1.5">
-          <IssueStatusBadge status={ticket.status} />
-        </div>
-      </div>
-      <Compass className="mt-0.5 size-4 shrink-0 text-(--status-task-done)" aria-hidden="true" />
-    </Link>
+        <Compass className="mt-0.5 size-4 shrink-0 text-(--status-task-done)" aria-hidden="true" />
+      </button>
+      <Link
+        to={issueHref(ticket.id)}
+        className="flex shrink-0 items-center rounded-md border border-border px-2 text-muted-foreground transition-colors hover:text-foreground"
+        aria-label={`Open ${ticket.identifier ?? "ticket"} in a new tab`}
+        title="Open in new tab"
+      >
+        <ExternalLink className="size-3.5" aria-hidden="true" />
+      </Link>
+    </div>
   );
 }
 
@@ -213,10 +255,12 @@ function DependencyGraph({
   mapId,
   tickets,
   edges,
+  onOpenIssue,
 }: {
   mapId: string;
   tickets: Map<string, Issue>;
   edges: Array<{ fromId: string; toId: string }>;
+  onOpenIssue: (id: string) => void;
 }) {
   const ticketIds = [...tickets.values()]
     .map((ticket) => ticket.id)
@@ -287,13 +331,14 @@ function DependencyGraph({
                   ticket.status === "cancelled" && "opacity-60",
                 )}
               >
-                <Link
-                  to={issueHref(id)}
-                  className="line-clamp-2 text-(length:--text-compact) font-medium hover:underline"
+                <button
+                  type="button"
+                  onClick={() => onOpenIssue(id)}
+                  className="line-clamp-2 text-left text-(length:--text-compact) font-medium hover:underline"
                 >
                   {ticket.identifier ? `${ticket.identifier} · ` : ""}
                   {ticket.title}
-                </Link>
+                </button>
                 <div className="mt-1.5">
                   <IssueStatusBadge status={ticket.status} />
                 </div>
@@ -307,10 +352,11 @@ function DependencyGraph({
                         const done = blocker.status === "done";
                         return (
                           <li key={blocker.id}>
-                            <Link
-                              to={issueHref(blocker.id)}
+                            <button
+                              type="button"
+                              onClick={() => onOpenIssue(blocker.id)}
                               className={cn(
-                                "inline-flex max-w-full items-center gap-1.5 text-(length:--text-nano) hover:underline",
+                                "inline-flex max-w-full items-center gap-1.5 text-left text-(length:--text-nano) hover:underline",
                                 done
                                   ? "text-(--status-task-done)"
                                   : "text-muted-foreground",
@@ -326,7 +372,7 @@ function DependencyGraph({
                               <span className="truncate">
                                 {blocker.identifier ?? blocker.title}
                               </span>
-                            </Link>
+                            </button>
                           </li>
                         );
                       })}
@@ -343,9 +389,11 @@ function DependencyGraph({
 }
 
 export function Wayfinder() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
+  // The ticket (or map) opened in the same-screen side pane. Null = pane closed.
+  const [openIssueId, setOpenIssueId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Wayfinder" }]);
@@ -392,46 +440,125 @@ export function Wayfinder() {
   }
 
   const selected = graphs.find((graph) => graph.map.id === selectedMapId);
+  const onOpenIssue = (id: string) => setOpenIssueId(id);
+  const panePrefix = selectedCompany?.issuePrefix ?? null;
+  const paneIssue = openIssueId
+    ? [...(issues ?? [])].find((issue) => issue.id === openIssueId) ?? null
+    : null;
 
   return (
-    <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+    <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+      <div className="min-w-0 flex-1 space-y-4">
+        {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {graphs.length === 0 && (
-        <EmptyState
-          icon={MapIcon}
-          message="No wayfinding maps yet. Run /wayfinder on a task to chart one."
+        {graphs.length === 0 && (
+          <EmptyState
+            icon={MapIcon}
+            message="No wayfinding maps yet. Run /wayfinder on a task to chart one."
+          />
+        )}
+
+        {graphs.length > 0 && (
+          <>
+            <div className="flex flex-wrap gap-2">
+              {graphs.map((graph) => (
+                <button
+                  key={graph.map.id}
+                  type="button"
+                  onClick={() => setSelectedMapId(graph.map.id)}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md border px-3 py-1.5 text-(length:--text-compact) transition-colors",
+                    (selected ?? graphs[0]).map.id === graph.map.id
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-background text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <span className="max-w-60 truncate font-medium">{graph.map.title}</span>
+                  {graph.openCount > 0 && (
+                    <span className="rounded-full bg-muted px-1.5 py-0.5 text-(length:--text-nano) tabular-nums">
+                      {graph.openCount} open
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {(selected ?? graphs[0]) ? (
+              <MapDag graph={selected ?? graphs[0]} onOpenIssue={onOpenIssue} />
+            ) : null}
+          </>
+        )}
+      </div>
+
+      {openIssueId && panePrefix && (
+        <IssuePane
+          prefix={panePrefix}
+          issueId={openIssueId}
+          title={paneIssue ? (paneIssue.identifier ? `${paneIssue.identifier} · ` : "") + paneIssue.title : "Ticket"}
+          onClose={() => setOpenIssueId(null)}
         />
       )}
-
-      {graphs.length > 0 && (
-        <>
-          <div className="flex flex-wrap gap-2">
-            {graphs.map((graph) => (
-              <button
-                key={graph.map.id}
-                type="button"
-                onClick={() => setSelectedMapId(graph.map.id)}
-                className={cn(
-                  "flex items-center gap-2 rounded-md border px-3 py-1.5 text-(length:--text-compact) transition-colors",
-                  (selected ?? graphs[0]).map.id === graph.map.id
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <span className="max-w-60 truncate font-medium">{graph.map.title}</span>
-                {graph.openCount > 0 && (
-                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-(length:--text-nano) tabular-nums">
-                    {graph.openCount} open
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-
-          {(selected ?? graphs[0]) ? <MapDag graph={selected ?? graphs[0]} /> : null}
-        </>
-      )}
     </div>
+  );
+}
+
+/**
+ * Same-screen side pane: renders the FULL issue detail page (the real
+ * `/{prefix}/issues/{id}` route) in a same-origin iframe, so an operator can
+ * read AND answer the ticket — comments, status changes, HITL question cards —
+ * without leaving the Wayfinder map. The `embedded` query param tells the
+ * embedded instance to run on in-memory history (no parent-history pollution)
+ * and to hide its global nav chrome (see lib/embedded-mode.ts).
+ */
+function IssuePane({
+  prefix,
+  issueId,
+  title,
+  onClose,
+}: {
+  prefix: string;
+  issueId: string;
+  title: string;
+  onClose: () => void;
+}) {
+  const src = issuePaneSrc(prefix, issueId);
+  return (
+    <aside
+      className="flex h-dvh min-h-0 w-full shrink-0 flex-col border-l border-border bg-background xl:sticky xl:top-0 xl:h-dvh xl:w-(--pct-62)"
+      aria-label="Ticket detail pane"
+    >
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <span className="min-w-0 flex-1 truncate text-(length:--text-compact) font-medium" title={title}>
+          {title}
+        </span>
+        <a
+          href={`/issues/${issueId}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-(length:--text-nano) text-muted-foreground transition-colors hover:text-foreground"
+          title="Open full page in a new tab"
+        >
+          <ExternalLink className="size-3.5" aria-hidden="true" />
+          new tab
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex shrink-0 items-center rounded-md border border-border px-2 py-1 text-(length:--text-nano) text-muted-foreground transition-colors hover:text-foreground"
+          aria-label="Close ticket pane"
+        >
+          <X className="size-3.5" aria-hidden="true" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 bg-background">
+        <iframe
+          src={src}
+          title={title}
+          className="h-full w-full border-0"
+          // Same-origin (our own app) — no sandbox attribute, so the embedded
+          // page keeps full functionality (forms, navigation, storage).
+        />
+      </div>
+    </aside>
   );
 }

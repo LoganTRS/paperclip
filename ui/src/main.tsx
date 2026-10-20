@@ -3,7 +3,8 @@ import { useAccountIdentity } from "./api/companies-query";
 import * as React from "react";
 import { StrictMode } from "react";
 import * as ReactDOM from "react-dom";
-import { BrowserRouter } from "@/lib/router";
+import { BrowserRouter, MemoryRouter } from "@/lib/router";
+import { isEmbeddedMode } from "@/lib/embedded-mode";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
@@ -69,13 +70,33 @@ function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
 
+// Embedded mode (iframe side pane, e.g. the Wayfinder board): run the router on
+// in-memory history so the embedded page's navigate() calls stay contained in
+// the iframe and never pollute the parent tab's back/forward history. Seeded
+// with the iframe's own URL so route params (issue id, company prefix) resolve.
+const embedded = isEmbeddedMode();
+const Router = embedded
+  ? MemoryRouter
+  : BrowserRouter;
+const routerProps = embedded
+  ? {
+      initialEntries: [
+        window.location.pathname + window.location.search + window.location.hash,
+      ],
+    }
+  : {};
+const RouterElement = Router as React.ComponentType<{
+  initialEntries?: string[];
+  children: React.ReactNode;
+}>;
+
 getOrCreatePaperclipReactRoot(window, rootElement).render(
   <StrictMode>
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <SentryGate />
         <ThemeProvider>
-          <BrowserRouter>
+          <RouterElement {...routerProps}>
             <CompanyProvider>
               <EditorAutocompleteProvider>
                 <ToastProvider>
@@ -99,7 +120,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                 </ToastProvider>
               </EditorAutocompleteProvider>
             </CompanyProvider>
-          </BrowserRouter>
+          </RouterElement>
         </ThemeProvider>
       </QueryClientProvider>
     </AppErrorBoundary>
