@@ -282,9 +282,18 @@ export async function execute(
 
   // ── Build environment ───────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
+  // The server passes the resolved task environment (secret refs resolved to
+  // real values, e.g. GITHUB_TOKEN) via ctx.context.paperclipResolvedEnv. The
+  // adapter's `config` (runtimeConfig) does NOT carry the resolved env (only
+  // the raw adapter_config with secret refs), so we read it from the context.
+  // Merge it AFTER process.env + userEnv so the resolved values win (e.g. the
+  // real PAT over any placeholder in process.env).
+  const ctxContextAll = (ctx as unknown as { context?: Record<string, unknown> }).context ?? {};
+  const resolvedEnv = ctxContextAll.paperclipResolvedEnv as Record<string, string> | undefined;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
+    ...(resolvedEnv && typeof resolvedEnv === "object" ? resolvedEnv : {}),
     ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };

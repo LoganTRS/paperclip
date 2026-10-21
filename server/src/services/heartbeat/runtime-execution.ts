@@ -738,6 +738,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               },
             }
           : {}),
+        // Resolved task environment (string env with secret refs resolved to real
+        // values, e.g. GITHUB_TOKEN). Passed to the adapter so it can inject the
+        // agent's configured env vars into the run — the adapter's `config`
+        // (runtimeConfig) does NOT carry the resolved env (only the raw
+        // adapter_config with secret refs), so the adapter reads it from here.
+        // Adapters that support this (openhands) merge it into the run's env.
+        ...(configuredTaskEnvironment && Object.keys(configuredTaskEnvironment).length
+          ? { paperclipResolvedEnv: configuredEnvironmentProjection(configuredTaskEnvironment) }
+          : {}),
       };
       const runtimeTools = createAdapterRuntimeToolAccess({
         agentId: agent.id,
