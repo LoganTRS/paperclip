@@ -149,13 +149,26 @@ def main():
             tool_specs = get_default_tools(enable_browser=False)
         agent_kwargs = {}
         agent_kwargs["tools"] = tool_specs
-        if args.system:
-            # The SDK's `Agent` takes an AgentContext (object), not a raw string.
-            # A custom --system prompt is injected as the system-message suffix.
-            from openhands.sdk.context.agent_context import AgentContext
-            agent_kwargs["agent_context"] = AgentContext(
-                system_message_suffix=args.system
-            )
+        # AgentContext: the SDK's `Agent` takes an AgentContext (object), not a
+        # raw string. A custom --system prompt is injected as the system-message
+        # suffix.
+        #
+        # Skill router: always construct the context with load_user_skills=True
+        # (even when no --system is given) so the SDK's native skill router is
+        # active. It scans ~/.openhands/skills/ (and the legacy
+        # ~/.openhands/microagents/) for user skills:
+        #   - trigger=None (no `triggers:`/`inputs:` frontmatter) => repo skill,
+        #     injected into the system prompt on every turn;
+        #   - trigger set => knowledge skill, matched per-turn against the user
+        #     message and injected when a keyword fires.
+        # $HOME resolves to /paperclip for the adapter process, so user skills
+        # live at /paperclip/.openhands/skills/ (persistent — it is inside the
+        # bind-mounted data volume and survives image rebuilds).
+        from openhands.sdk.context.agent_context import AgentContext
+        agent_kwargs["agent_context"] = AgentContext(
+            system_message_suffix=args.system,
+            load_user_skills=True,
+        )
         agent = Agent(llm=llm, **agent_kwargs)
         workspace = LocalWorkspace(working_dir=args.workdir)
 
