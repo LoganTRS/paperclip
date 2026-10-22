@@ -169,6 +169,30 @@ def main():
             system_message_suffix=args.system,
             load_user_skills=True,
         )
+        # Context condenser (default: none). Without one, the FULL event
+        # history is re-sent on every LLM call, so input tokens grow
+        # ~linearly for the whole run (verified: a 30-min coding run
+        # reached ~11M cumulative input tokens and died on the adapter's
+        # 30-min wall-clock timeout mid-work). A summarizing condenser
+        # keeps head + recent tail and folds the middle into a rolling
+        # summary, bounding the per-call input size and extending the
+        # practical run length. max_size is in EVENTS (not tokens); 150
+        # keeps the tail well within a ~128K-token window even with
+        # verbose tool observations.
+        # OPENHANDS_CONDENSER=max_size disables it (value <= 0) for
+        # runs that need the full uncondensed history.
+        condenser_env = os.environ.get("OPENHANDS_CONDENSER", "150").strip()
+        try:
+            condenser_max_size = int(condenser_env)
+        except ValueError:
+            condenser_max_size = 150
+        if condenser_max_size > 0:
+            from openhands.sdk.context.condenser import LLMSummarizingCondenser
+            agent_kwargs["condenser"] = LLMSummarizingCondenser(
+                llm=llm,
+                max_size=condenser_max_size,
+                keep_first=4,
+            )
         agent = Agent(llm=llm, **agent_kwargs)
         workspace = LocalWorkspace(working_dir=args.workdir)
 
