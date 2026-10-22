@@ -7560,6 +7560,7 @@ export function issueRoutes(
         interruptedByActorType: input.actor.actorType,
         interruptedByActorId: input.actor.actorId,
       },
+      resolveOperatorInterruptedRecovery: input.actor.actorId,
     };
   }
 

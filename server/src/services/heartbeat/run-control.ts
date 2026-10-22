@@ -19,6 +19,7 @@ import {
   requestedRunCancellation,
 } from "../run-cancellation.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
+import { settleOperatorInterruptedExecutionRecovery } from "../legacy-execution-recovery.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isAcknowledgedNativeStop,
@@ -247,6 +248,12 @@ export type CancelRunOptions = {
     terminationGraceMs?: number;
     /** Caller is immediately scheduling an explicit successor path. */
     suppressImmediateRecovery?: boolean;
+    /**
+     * When the cancelled run is a verified operator-interrupted queued-comment
+     * stop, retire its reconciliation hold instead of leaving the successor
+     * parked behind it. The actor is the interrupting board user.
+     */
+    resolveOperatorInterruptedRecovery?: string | null;
   };
 
 /** Run control binds cancellation, resource release, and saved-input resumption. */
@@ -1222,6 +1229,25 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         await releaseIssueExecutionAndPromote(cancelled, {
           suppressImmediateRecovery: options.suppressImmediateRecovery,
         });
+        if (options.resolveOperatorInterruptedRecovery && !options.suppressImmediateRecovery) {
+          // An expected operator stop whose outcome is a queued-comment
+          // successor carries the operator's fresh explicit intent. Retire
+          // the reconciliation hold the stop would otherwise create before
+          // any release promotion can park the successor behind it.
+          const settled = await settleOperatorInterruptedExecutionRecovery(db, {
+            run: cancelled,
+            actorId: options.resolveOperatorInterruptedRecovery,
+          });
+          if (settled) {
+            await appendRunEvent(cancelled, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "info",
+              message: "operator-interrupted reconciliation hold retired; queued input continues through the interrupt",
+              payload: { actorId: options.resolveOperatorInterruptedRecovery },
+            });
+          }
+        }
         await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });

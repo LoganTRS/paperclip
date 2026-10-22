@@ -508,7 +508,14 @@ export async function resolveManagedGitHubCredential(
     const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
     const github = grant.providerTenant?.github;
     if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
-    if (github.installationCount < 1 || github.repositoryCount < 1) {
+    // PAT-based grants (accessRevision starting with "manual-pat-") are
+    // authorized by the PAT's actual access, which GitHub validates at git
+    // operation time. The repositoryCount/installationCount snapshot is only
+    // meaningful for GitHub App installations where the repo list is the
+    // source of truth. For PAT grants, skip the pre-flight count gate so
+    // that a stale or empty repo snapshot does not block all git operations.
+    const isPatGrant = typeof github.accessRevision === "string" && github.accessRevision.startsWith("manual-pat-");
+    if (!isPatGrant && (github.installationCount < 1 || github.repositoryCount < 1)) {
       return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity no longer has repository access" };
     }
     const accessContext = {

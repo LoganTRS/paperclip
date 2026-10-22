@@ -11,6 +11,7 @@ import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { logActivity } from "./activity-log.js";
+import { readRunCancellation } from "./run-cancellation.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
 
@@ -317,6 +318,118 @@ export async function settleInterruptedNativeBootstrap(
 export async function recordLegacyWorkspaceRestoreFailure(db: Db, run: Run, evidence: Record<string, unknown>, source?: LegacyWorkspaceRestoreSource) {
   if (run.runtimeMode !== "legacy" || !hasWorkspaceRestoreFailure(evidence)) return;
   return recordRequiredWorkspaceRestoreFailure(db, run, evidence, source);
+}
+
+/**
+ * Retire the reconciliation hold an operator-interrupted legacy stop would
+ * otherwise create. Called from the operator interrupt path that already
+ * owns the successor (the queued-comment interrupt click): the stop is an
+ * expected cancellation with an acknowledged execution cancellation and the
+ * queued-comment marker, so the operator's fresh explicit intent is durable
+ * proof that continuation does not replay uncertain provider actions.
+ *
+ * Safety: only the exact fingerprint of THIS run is retired
+ * (`legacy-execution:${run.id}`, evidence.runId === run.id), never
+ * workspace-restore holds (restore_unsafe_archive / recovery schema are
+ * excluded) and never native reconciliation holds. Runs that are not
+ * operator-interrupted (missing marker or unacknowledged cancellation) are
+ * left untouched, so a genuine unexplained stop still parks its saved input
+ * behind the hold.
+ */
+export async function settleOperatorInterruptedExecutionRecovery(
+  db: Db,
+  input: { run: typeof heartbeatRuns.$inferSelect; actorId: string },
+): Promise<boolean> {
+  const { run } = input;
+  if (run.runtimeMode !== "legacy" || run.status !== "cancelled") return false;
+  const cancellation = readRunCancellation(run.resultJson);
+  if (!cancellation?.expected || (run.resultJson?.executionCancellation as { state?: string } | undefined)?.state !== "acknowledged") {
+    return false;
+  }
+  if (typeof run.resultJson?.queuedCommentInterruptQueueId !== "string") return false;
+  const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
+  if (!issueId) return false;
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
+    );
+    const [task] = await tx
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .for("update");
+    const [current] = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
+      .for("update");
+    if (!task || !current || current.runtimeMode !== "legacy" || current.status !== "cancelled") return false;
+    // Re-verify the receipts under lock: the run must still carry the
+    // operator-interrupt marker and an acknowledged cancellation.
+    const currentCancellation = readRunCancellation(current.resultJson);
+    if (!currentCancellation?.expected || (current.resultJson?.executionCancellation as { state?: string } | undefined)?.state !== "acknowledged") {
+      return false;
+    }
+    if (typeof current.resultJson?.queuedCommentInterruptQueueId !== "string") return false;
+    if (hasRequiredWorkspaceRecovery(current.resultJson)) return false;
+    const holds = await tx
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, run.companyId),
+          eq(issueRecoveryActions.sourceIssueId, task.id),
+          eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
+          eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`not (${issueRecoveryActions.evidence} ? 'executionReconciliation')`,
+          sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
+          or(
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            and(
+              eq(issueRecoveryActions.status, "resolved"),
+              eq(issueRecoveryActions.outcome, "blocked"),
+              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'`,
+              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+            ),
+          ),
+        ),
+      )
+      .for("update");
+    if (!holds.length) return false;
+    const now = new Date();
+    const resolved = await tx
+      .update(issueRecoveryActions)
+      .set({
+        status: "resolved",
+        outcome: "interrupted_by_operator",
+        resolutionNote:
+          "The operator interrupted this run to send a queued message; the interrupt carries fresh explicit user intent and the successor does not replay the stopped run.",
+        resolvedAt: now,
+        updatedAt: now,
+        evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+          operatorInterruptRecovery: { actorId: input.actorId, recordedAt: now.toISOString() },
+        })}::jsonb`,
+      })
+      .where(inArray(issueRecoveryActions.id, holds.map((hold) => hold.id)))
+      .returning({ id: issueRecoveryActions.id });
+    if (!resolved.length) return false;
+    await logActivity(tx as unknown as Db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "issue.recovery_action_resolved",
+      entityType: "issue",
+      entityId: task.id,
+      details: {
+        reason: "operator_interrupted_queued_comment",
+        recoveryActionIds: resolved.map((row) => row.id),
+      },
+    });
+    return true;
+  });
 }
 
 export async function recordRequiredWorkspaceRestoreFailure(db: Db, run: Run, evidence: Record<string, unknown>, source?: LegacyWorkspaceRestoreSource) {

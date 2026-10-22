@@ -61,6 +61,22 @@ RUN apt-get update \
   && hermes --version >/dev/null 2>&1 || true \
   && openhands --version >/dev/null 2>&1 || true
 
+# Patch the OpenHands stuck detector to use a higher repetition threshold (6
+# instead of 4). The default threshold is too aggressive for debugging
+# workloads: the agent legitimately runs the same probe command multiple times
+# to inspect different aspects of a problem, but the stuck detector sees
+# "same command 4 times in a row" and kills the run. This wastes time because
+# the recovery re-does the work from scratch. Increasing the threshold to 6
+# gives the agent more room to iterate on debug probes before being killed.
+# This is a container-local patch (applied at build time); if OpenHands is
+# updated, re-verify the stuck_detector.py path and re-apply the patch.
+RUN STUCK_FILE=$(dirname $(/opt/agent-tools/bin/python3 -c 'import openhands.sdk.conversation.stuck_detector as s,os;print(s.__file__)')) \
+  && sed -i "s/len(last_actions) < 4/len(last_actions) < 6/g" "$STUCK_FILE" \
+  && sed -i "s/len(last_observations) < 4/len(last_observations) < 6/g" "$STUCK_FILE" \
+  && sed -i "s/len(last_actions) == 4 and len(last_observations) == 4/len(last_actions) == 6 and len(last_observations) == 6/g" "$STUCK_FILE" \
+  && sed -i "s/len(last_actions) >= 4 and len(last_observations) >= 4/len(last_actions) >= 6 and len(last_observations) >= 6/g" "$STUCK_FILE" \
+  && echo "Stuck detector patched (threshold 4 -> 6)"
+
 # The Python-based harness clients (hermes, openhands) use the requests/urllib3
 # stack, which honors SSL_CERT_FILE / REQUESTS_CA_BUNDLE. Point them at the
 # system bundle so the self-signed proxy cert is trusted by every
