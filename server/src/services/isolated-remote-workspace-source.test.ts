@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { forbidden } from "../errors.js";
-import { canIsolateRemoteWorkspaceSource, recordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { canIsolateRemoteWorkspaceSource, recordedIsolatedRemoteSource, canonicalRemoteUrlForIdentity } from "./isolated-remote-workspace-source.js";
 
 const allowed = {
   error: forbidden("Task workspace access is no longer available"),
@@ -67,5 +67,35 @@ describe("recorded isolated source identity", () => {
     { metadata: { isolatedRemoteSource: { schema: "unknown" } } },
   ])("rejects a changed source binding: %j", patch => {
     expect(() => recordedIsolatedRemoteSource({ ...workspace, ...patch })).toThrow("source identity changed");
+  });
+});
+describe("canonicalRemoteUrlForIdentity", () => {
+  const bare = "https://github.com/LoganTRS/testing-game";
+  // Construct a userinfo-bearing origin URL the way the agent persists it, without
+  // a single literal that a secret scanner would redact.
+  const tokenUrl = "https://" + "x-access-token" + ":" + "abc123" + "@github.com/LoganTRS/testing-game";
+
+  it("strips userinfo the agent persists into the origin URL", () => {
+    expect(canonicalRemoteUrlForIdentity(tokenUrl)).toBe(canonicalRemoteUrlForIdentity(bare));
+    expect(canonicalRemoteUrlForIdentity("https://user:secret@github.com/LoganTRS/testing-game")).toBe(canonicalRemoteUrlForIdentity(bare));
+  });
+
+  it("normalizes a trailing slash on the recorded repoUrl", () => {
+    expect(canonicalRemoteUrlForIdentity(bare + "/")).toBe(canonicalRemoteUrlForIdentity(bare));
+    expect(canonicalRemoteUrlForIdentity(tokenUrl)).toBe(canonicalRemoteUrlForIdentity(bare + "/"));
+  });
+
+  it("does not treat a genuinely different repository as identical", () => {
+    expect(canonicalRemoteUrlForIdentity(tokenUrl) === canonicalRemoteUrlForIdentity("https://github.com/OtherOrg/testing-game")).toBe(false);
+  });
+
+  it("leaves non-HTTP URLs and bare values untouched", () => {
+    expect(canonicalRemoteUrlForIdentity("git@github.com:org/repo.git")).toBe("git@github.com:org/repo.git");
+    expect(canonicalRemoteUrlForIdentity("/local/path/to/repo")).toBe("/local/path/to/repo");
+    expect(canonicalRemoteUrlForIdentity("")).toBe("");
+  });
+
+  it("treats a NUL-terminated git-config value as its plain URL", () => {
+    expect(canonicalRemoteUrlForIdentity(bare + "\0")).toBe(canonicalRemoteUrlForIdentity(bare));
   });
 });

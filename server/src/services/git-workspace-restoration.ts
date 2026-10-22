@@ -11,7 +11,7 @@ import { materializeManagedProjectWorkspace } from "./managed-repository-checkou
 import { promisify } from "node:util";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
-import { recordedIsolatedRemoteSource, verifiedRecordedIsolatedRemoteSource, materializeIsolatedRemoteWorkspaceSource } from "./isolated-remote-workspace-source.js";
+import { recordedIsolatedRemoteSource, verifiedRecordedIsolatedRemoteSource, materializeIsolatedRemoteWorkspaceSource, canonicalRemoteUrlForIdentity } from "./isolated-remote-workspace-source.js";
 import { findRegenerableWorkspaceDirs } from "./workspace-compaction.js";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 
@@ -67,8 +67,11 @@ async function verifiedGitCacheSource(workspace: Workspace, sourcePath: string) 
   if (actual !== path.join(await fs.realpath(root), path.relative(root, sourcePath))) throw new GitCacheRestorationFailure();
   const storage = await fs.lstat(path.join(actual, ".git"));
   if (!storage.isDirectory() || storage.isSymbolicLink()
-    || (await gitCacheCommand(actual, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim() !== path.join(actual, ".git")
-    || (await gitCacheCommand(actual, ["config", "--local", "--null", "--get-all", "remote.origin.url"])) !== `${workspace.repoUrl}\0`) throw new GitCacheRestorationFailure();
+    || (await gitCacheCommand(actual, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim() !== path.join(actual, ".git")) throw new GitCacheRestorationFailure();
+  const originUrls = (await gitCacheCommand(actual, ["config", "--local", "--null", "--get-all", "remote.origin.url"])).split("\0").filter(Boolean);
+  const expected = canonicalRemoteUrlForIdentity(workspace.repoUrl ?? "");
+  const firstOrigin = originUrls[0];
+  if (originUrls.length !== 1 || firstOrigin === undefined || canonicalRemoteUrlForIdentity(firstOrigin) !== expected) throw new GitCacheRestorationFailure();
   return sourcePath;
 }
 

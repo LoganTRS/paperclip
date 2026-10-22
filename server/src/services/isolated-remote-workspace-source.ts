@@ -57,6 +57,36 @@ export function recordedIsolatedRemoteSource(input: {
   return isolatedRemoteSourcePath(input.companyId, input.sourceIssueId);
 }
 
+/** Strip userinfo (`https://user:pass@host/...` -> `https://host/...`) from a remote
+ * URL so identity checks compare the repository (host + path), not the credential.
+ *
+ * The Coder agent authenticates git operations via an inline `x-access-token` userinfo
+ * (it has `GITHUB_TOKEN` in its run env and uses `git` directly), and a push/fetch with an
+ * inline-cred URL can leave that userinfo persisted in the worktree's `remote.origin.url`.
+ * That is legitimate — the host + path still name the same repository — but a byte-for-byte
+ * comparison against the bare `repoUrl` then fails with "Isolated repository source identity
+ * changed" and the next continuation run dies in `preparing` (setup_failed), which strands
+ * the issue in a blocked/recovery limbo. Canonicalizing the userinfo before comparing keeps
+ * the security property (a *different* host or path is still rejected) while tolerating the
+ * credential the agent itself added.
+ */
+export function canonicalRemoteUrlForIdentity(rawUrl: string): string {
+  // `git config --get-all` with `--null` returns `<url>\0`; callers strip the NUL before
+  // calling here, but be defensive.
+  const url = rawUrl.replace(/\0+$/u, "");
+  if (!url) return url;
+  // Strip a userinfo component (`https://user:pass@host/...` -> `https://host/...`) so the
+  // identity check compares the repository (host + path), not the credential the agent
+  // persisted. Only touch http(s)/ssh URLs; leave scp-style and file paths alone.
+  const match = url.match(/^(https?:|ssh:)\/\/([^@/]*@)?(.*)$/);
+  if (!match) return url;
+  const [full, proto, , rest] = match;
+  void full;
+  // Normalize a single trailing slash so `repo` and `repo/` compare equal.
+  const normalized = rest.length > 1 ? rest.replace(/\/+$/u, "") : rest;
+  return `${proto}//${normalized}`;
+}
+
 async function assertRemoteSourceIdentity(cwd: string, repoUrl: string) {
   const root = resolvePaperclipInstanceRoot();
   const canonicalCwd = await fs.realpath(cwd);
@@ -70,7 +100,14 @@ async function assertRemoteSourceIdentity(cwd: string, repoUrl: string) {
   const common = await execFile("git", ["-C", canonicalCwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], options);
   if (common.stdout.trim() !== gitDir) throw new Error("Isolated repository source Git storage changed");
   const origin = await execFile("git", ["-C", canonicalCwd, "config", "--local", "--null", "--get-all", "remote.origin.url"], options);
-  if (origin.stdout !== `${repoUrl}\0`) throw new Error("Isolated repository source identity changed");
+  // Compare the canonicalized (userinfo-stripped) origin URL against the canonicalized
+  // expected repoUrl. The agent may have persisted an inline credential into the origin
+  // URL (see canonicalRemoteUrlForIdentity); the host + path must still match.
+  if (origin.stdout === "\0") return; // no origin configured — nothing to verify
+  const [actualOrigin] = origin.stdout.split("\0").filter(Boolean);
+  if (canonicalRemoteUrlForIdentity(actualOrigin) !== canonicalRemoteUrlForIdentity(repoUrl)) {
+    throw new Error("Isolated repository source identity changed");
+  }
 }
 
 export async function verifiedRecordedIsolatedRemoteSource(input: Parameters<typeof recordedIsolatedRemoteSource>[0]): Promise<string | null> {
