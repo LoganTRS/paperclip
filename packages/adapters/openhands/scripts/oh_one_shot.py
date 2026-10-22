@@ -46,6 +46,12 @@ def parse_args():
     p.add_argument("--workdir", required=True, help="Working directory for the conversation.")
     p.add_argument("--conversation-id", default=None, help="Resume this conversation id (uuid).")
     p.add_argument("--max-iterations", type=int, default=500, help="Max iterations per run.")
+    p.add_argument(
+        "--stuck-retries",
+        type=int,
+        default=1,
+        help="Bounded recovery turns after the SDK stuck detector fires (0 disables).",
+    )
     p.add_argument("--system", default=None, help="Optional system prompt override.")
     return p.parse_args()
 
@@ -206,8 +212,73 @@ def main():
         conv.send_message(prompt)
         conv.run()
 
+        # If the SDK's StuckDetector fired, the run loop ends with
+        # execution_status == STUCK and the agent was NOT given a chance to
+        # step back, summarize what it was doing, or call the finish tool.
+        # The run() loop only re-enters for IDLE/PAUSED — a second run() on a
+        # STUCK conversation is a no-op — so the recovery uses a fresh
+        # conversation seeded with the prior event history as context,
+        # bounded to a single turn (--stuck-retries, default 1). The agent is
+        # told explicitly to stop probing and emit a short summary + next
+        # step. The recovery's final response REPLACES the stuck run's last
+        # (repeated) message in the emitted output, so Paperclip's issue
+        # comment carries a real handoff instead of the last loop iteration.
+        recovery_final = None
+        stuck_state_name = None
+        try:
+            # Imported here (runtime, container venv) because pyright in
+            # this repo cannot resolve the SDK's import graph.
+            from openhands.sdk.conversation.state import (
+                ConversationExecutionStatus,
+            )
+
+            stuck_state_name = ConversationExecutionStatus.STUCK
+            _stuck = conv.state.execution_status == stuck_state_name
+        except Exception:
+            _stuck = False
+        if _stuck:
+            log("[openhands] stuck state detected; running bounded recovery turn")
+            recovery_prompt = (
+                "STOP: you are being interrupted because the runtime detected "
+                "you were repeating the same commands or edits without gaining "
+                "new information. Do NOT re-run or re-edit anything in this "
+                "turn. In your final message, state concisely: "
+                "(1) what you have verified and what work is already "
+                "committed or working, (2) exactly what you were repeating, "
+                "(3) the single most likely next step to finish the task, "
+                "(4) any environment or spec ambiguity you hit. Keep it "
+                "under 300 words."
+            )
+            retries = max(0, min(getattr(args, "stuck_retries", 0), 2))
+            for _ in range(retries):
+                try:
+                    recovery_conv = LocalConversation(
+                        agent=agent,
+                        workspace=workspace,
+                        max_iteration_per_run=3,
+                        stuck_detection=True,
+                    )
+                    recovery_conv.send_message(recovery_prompt)
+                    recovery_conv.run()
+                    rec_events = list(recovery_conv.state.events)
+                    recovery_final = get_agent_final_response(rec_events)
+                    if recovery_final:
+                        log(
+                            "[openhands] stuck recovery produced a final "
+                            "response; using it instead of the stuck run's last message"
+                        )
+                    break
+                except Exception as rec_err:  # noqa: BLE001
+                    log(
+                        f"[openhands] stuck-recovery turn failed: "
+                        f"{type(rec_err).__name__}: {rec_err}"
+                    )
+                    break
+
         events = list(conv.state.events)
         final = get_agent_final_response(events)
+        if recovery_final:
+            final = recovery_final
 
         # Best-effort usage aggregation from events.
         usage = {"input_tokens": 0, "output_tokens": 0}
